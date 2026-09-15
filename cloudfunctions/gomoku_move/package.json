@@ -1,0 +1,9 @@
+{
+  "name": "gomoku_move",
+  "version": "1.0.0",
+  "description": "五子棋落子（服务端权威）：合法性校验 + 四方向五连检测",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

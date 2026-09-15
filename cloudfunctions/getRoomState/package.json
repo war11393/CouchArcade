@@ -1,0 +1,9 @@
+{
+  "name": "getRoomState",
+  "version": "1.0.0",
+  "description": "拉取房间全量状态：断线重连兜底 + 惰性超时解散",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

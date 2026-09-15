@@ -1,0 +1,9 @@
+{
+  "name": "joinRoom",
+  "version": "1.0.0",
+  "description": "加入/离开房间：占座（乐观锁防并发）、房主移交、解散判定",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "planehunt_flip",
+  "version": "1.0.0",
+  "description": "寻机头翻格（服务端权威）：返回真实格子内容，机头奖励连翻",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

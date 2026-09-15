@@ -1,0 +1,9 @@
+{
+  "name": "createRoom",
+  "version": "1.0.0",
+  "description": "创建房间：分配唯一 6 位房间号，创建者坐 0 号位",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

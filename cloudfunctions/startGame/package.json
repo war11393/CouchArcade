@@ -1,0 +1,9 @@
+{
+  "name": "startGame",
+  "version": "1.0.0",
+  "description": "房主开局：生成随机种子与权威布局，房间进入 playing",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

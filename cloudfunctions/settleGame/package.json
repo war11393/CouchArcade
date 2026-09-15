@@ -1,0 +1,9 @@
+{
+  "name": "settleGame",
+  "version": "1.0.0",
+  "description": "对局结算：以服务端权威结果写 match_records 并更新用户战绩",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~2.6.3"
+  }
+}

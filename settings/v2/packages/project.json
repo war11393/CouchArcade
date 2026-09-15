@@ -1,0 +1,56 @@
+{
+  "__version__": "1.0.6",
+  "general": {
+    "designResolution": {
+      "width": 720,
+      "height": 1280,
+      "fitWidth": true,
+      "fitHeight": false
+    },
+    "highQuality": true,
+    "customLayers": []
+  },
+  "physics": {
+    "gravity": { "x": 0, "y": -320, "z": 0 },
+    "allowSleep": true,
+    "sleepThreshold": 0.1,
+    "autoSimulation": true,
+    "fixedTimeStep": 0.0166667,
+    "maxSubSteps": 1,
+    "defaultMaterial": null,
+    "collisionMatrix": { "0": 1 },
+    "collisionGroups": []
+  },
+  "layer": [],
+  "sortingLayer": [],
+  "sortingLayerMap": {},
+  "engine": {
+    "macroConfig": {
+      "ENABLE_TRANSPARENT_CANVAS": false,
+      "ENABLE_CULLING": true,
+      "CLEANUP_IMAGE_CACHE": false,
+      "ENABLE_MULTI_TOUCH": true,
+      "ENABLE_FLOAT_OUTPUT": true,
+      "CUSTOM_PIPELINE_NAME": "",
+      "ENABLE_BATCHER2D_MEM_INCREMENT": true,
+      "BATCHER2D_MEM_INCREMENT": 2880
+    },
+    "customLayers": []
+  },
+  "preview": {
+    "port": 7456,
+    "showFPS": true
+  },
+  "splashScreen": {
+    "displayRatio": 0.4,
+    "totalTime": 3000,
+    "watermark": true
+  },
+  "rendering": {
+    "renderPipeline": ""
+  },
+  "time": {
+    "frameRate": 60,
+    "fixedTimeStep": 0.0166667
+  }
+}
