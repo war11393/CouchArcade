@@ -192,9 +192,19 @@ export class RoomScene extends Component {
 
         this._refreshButtons(state);
 
-        // 全员就绪 + 房主 → 直接开局（保持原行为：READY 后自动进入对局）
-        if (this._isOwner && (state.status === RoomStatus.READY || state.isPractice)) {
-            console.log('[RoomScene] 满足自动开局条件（房主 + READY/练习房）→ 触发 _onStart');
+        // 满足开局条件 → 直接开局（READY 后自动进入对局）。
+        // ⚠️ 判定顺序很重要：练习房（isPractice）与「我 = 房主 + READY」都要放行，
+        //    且必须排除已 PLAYING（否则状态推送会重复开局）。
+        const canAutoStart =
+            this._isOwner &&
+            state.status !== RoomStatus.PLAYING &&
+            state.status !== RoomStatus.FINISHED &&
+            state.status !== RoomStatus.DISSOLVED &&
+            (state.status === RoomStatus.READY || state.isPractice);
+        if (canAutoStart) {
+            console.log(
+                `[RoomScene] 满足自动开局条件（房主 + status=${state.status} isPractice=${state.isPractice}）→ 触发 _onStart`,
+            );
             void this._onStart();
         }
 

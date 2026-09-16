@@ -404,7 +404,7 @@ Remove-Item -Recurse -Force library, temp
 | :--- | :--- | :--- |
 | `Layers.Enum.DEFAULT`（`new Node()` 默认） | 1073741824 | `1<<30` |
 | `Layers.Enum.UI_2D`（静态场景节点用的） | 33554432 | `1<<25` |
-| 相机 `visibility`（四个场景实测） | 50331648 | `1<<25 \| 1<<24` |
+| 相机 `visibility`（四个场景实测） | 50331648 | `1<<25 \| 1<<24 \| 1<<23` |
 
 `50331648 & 1073741824 === 0` —— **DEFAULT 层的节点对 UI 相机完全不可见**，
 而且**不参与 UI 事件命中测试**。所以运行时创建的一切（Toast / 模式弹窗 /
@@ -469,6 +469,272 @@ Remove-Item -Recurse -Force library, temp
 **仍需真人确认**（我无法渲染）：预览点「开始游戏」→ 应看到半透明蒙层 +
 居中模式选择面板 + 深色诊断面板（其中 `mask.layer=33554432(UI_2D✓) 相机可见=是✓`）。
 确认无误后把 `AppConfig.SHOW_DIALOG_DEBUG` 改回 `false`。
+
+---
+
+## 第 7 轮：AI 练习无法开局 + 寻机头点击无反应 + 弹窗/棋盘 UI
+
+**日期**：2026-09-16
+
+本轮是**四个独立问题**，其中两个是真 bug（会卡死流程），两个是 UI 调整。
+两个 bug 都属于「看代码觉得很对、跑起来才发现」的类型，因此**先写复现脚本再改**
+（见文末「方法」一节）。
+
+### 7.1 AI 练习模式点进对局报「全员准备后才能开局」
+
+**症状**：大厅选「AI 练习」→ 进 Room → `[RoomScene] AI 练习模式：跳过等待，准备开局`
+→ 立刻 `[RoomScene] 开局失败: Error: 全员准备后才能开局`。
+
+**根因**：`MockRoomService._refreshReadyStatus()` 是个**会把状态降级**的函数：
+
+```typescript
+const allReady = room.seats.every((s) => s.playerId !== '' && s.ready);
+if (!allReady && room.status === RoomStatus.READY) {
+    this._setStatus(RoomStatus.WAITING);   // ← 把已经 READY 的房打回 WAITING
+}
+```
+
+而练习房的 `_fillAiSeats()` 给 AI 座位写的是 **`ready: false`**。
+于是**任何一次** `_refreshReadyStatus()`（玩家点一下「准备」按钮就够）
+都会让练习房 `READY → WAITING`，随后自动开局必然抛错。
+
+关键点：`createRoom` 里是先 `_fillAiSeats()` 再无条件 `_setStatus(READY)`，
+所以**首次**开局是好的 —— 这解释了为什么它时好时坏、看起来像竞态。
+
+**修复**（三处，防御层层递进）：
+
+| 位置 | 改动 |
+| :--- | :--- |
+| `_fillAiSeats` 之后 | 把 AI 座位显式标为 `ready = true`（语义正确：AI 本来就随时能开局） |
+| `_refreshReadyStatus` | 练习房直接短路：只要不是 PLAYING 就保持在 READY，**不参与准备判定** |
+| `startRoom` | 门槛改为 `status !== READY && !isPractice`，练习房不因瞬时状态被拦 |
+| `RoomScene._onRoomState` | 自动开局条件显式排除 PLAYING/FINISHED/DISSOLVED，避免状态推送重复开局 |
+| `startRoom` 报错信息 | 把 `status / isPractice / 各座位准备情况` 打进错误文本，下次一眼定位 |
+
+### 7.2 寻机头点击棋盘「没有任何反应」（五子棋正常）
+
+**症状**：AI 练习进对局后，棋盘显示正常，但**点任何格子都没反应**。
+五子棋同样的流程却正常 —— 差异在两款游戏的 Authority 构造函数签名。
+
+**根因：实参错位。** `PlaneHuntAuthority` 的签名是
+`(roomId, firstPlayerId, secondPlayerId, aiPlayerId, seed, level)`，
+而 `GameScene` 传的是：
+
+```typescript
+new PlaneHuntAuthority(
+    ctx.room.roomId,
+    ctx.firstPlayerId,
+    ctx.myPlayerId,        // ← 这一位是 secondPlayerId，却被传了「我」
+    ctx.opponent.playerId,
+    ...
+```
+
+`secondPlayerId` 与 `firstPlayerId` 都成了我自己 → `PlaneHuntRules.opponentOf()`
+遍历 `_scores` 找不到「非我」的 id → **返回空字符串** →
+下发结果 `nextPlayerId = ''` → 客户端 `isMyTurn()` 恒为 `false` →
+`onPlayerClick` 第一道判断就 `return`。**静默失败，连警告都没有。**
+
+第二个独立缺陷：客户端 `PlaneHuntGame._applyFlipResult()` 里原本有一行
+`this._rules = this._rules;`（自我赋值，注释还写着「保留引用语义」）——
+本地 `_rules` 是**另一个实例**，回合状态永远不会推进，
+所以即使 `nextPlayerId` 正常，`isMyTurn()` 也读的是过期数据。
+
+**修复**：
+
+| 位置 | 改动 |
+| :--- | :--- |
+| `GameScene` | 按签名正确传参：`secondId = (firstId === myPlayerId) ? oppId : myPlayerId`，并加注释说明与五子棋 Authority 签名不同、易踩 |
+| `PlaneHuntGame` | 新增 `_serverTurnId`，回合判定改为「以权威下发为准」；`_applyFlipResult` 里记录 `p.nextPlayerId` |
+| `PlaneHuntGame` | 删掉 `this._rules = this._rules` 自我赋值；补注释说明「客户端不自行推演棋局」 |
+| `PlaneHuntRules` | **构造时防呆**：两名玩家 id 相同/为空即 `console.error`，把静默失败变成显式报警 |
+
+### 7.3 顺带修掉的一个真 bug：寻机头得分归属错位
+
+`PlaneHuntBoard.revealCell()` 用 `this._isMyTurn` 判断这一格该给谁记分。
+但该方法是在 `setTurn()` **之后**被调用的 —— 那时 `_isMyTurn` 已经是
+**翻完之后**的回合方。于是「对手翻中的机头」会被记到我方得分上，双方得分整体错位。
+（还有一行 `this._myPlayerId === this._firstPlayerId ? score : score` —— 三元两边同值，
+等于没判断。）
+
+**修复**：协议里补 `byPlayerId`（翻格者），板子按「谁翻的」归属：
+`PlaneHuntRules.FlipResult.byPlayerId` → `PhFlipResultPayload.byPlayerId` →
+`revealCell(..., byMe, ...)`。归属与回合是两件事 —— 翻中机头会奖励连翻，
+此时**归属变了但回合没变**，用回合反推归属必然出错。
+
+### 7.4 模式选择弹窗：选项偏大、会压到取消按钮
+
+**修复**：
+
+- 选项按钮 88 → **72** 高、宽度 440，间距 14（原 110 的行距里按钮占 88，留白不均）
+- 选项区包进 **ScrollView**（`view` 挂 `Mask` + `content` 锚点 `(0.5,1)` 顶部对齐，
+  纵向、惯性、弹性滚动），固定可视高 **300**；内容不足时不滚动
+- 面板高度改为**分区计算**：标题区 120 + 选项区 + 取消区 104。
+  取消按钮独立在面板底部，**结构上不可能**被选项压住（原来是绝对定位硬凑，
+  选项一多就重叠）
+- 日志补 `选项数 / 面板高 / 选项区高 / 内容高 / (需/无需滚动)`，方便核对
+
+> 从「绝对定位硬凑坐标」改成「分区 + 可滚动容器」，是为了让**选项数量变成配置驱动的**：
+> 将来加「人机难度」「好友房」等入口时不会再次压版。
+
+### 7.5 棋盘 UI：白子看不见、网格线太浅
+
+**根因（纯设计令牌问题，改一处即可全局生效）**：`UITheme.BOARD` 里
+
+| 令牌 | 原值 | 问题 |
+| :--- | :--- | :--- |
+| `gomokuBg` / `whiteStone` | **都是 `#FFFFFF`** | 白子与棋盘底同色，落上去只剩 1px 描边，看起来「没有子」 |
+| `gomokuLine` | `#D8DDE4` | 在白底上对比度极低，15×15 几乎看不出格子 |
+| `stoneEdge` | `#C9D0DA` | 白子描边太浅，等于没有 |
+| `huntLine` | `#DFE3E9` | 同上（寻机头） |
+
+**修复**（只改 `UITheme.ts` 的 `BOARD`，两个棋盘共用一套视觉语言）：
+
+| 令牌 | 新值 | 理由 |
+| :--- | :--- | :--- |
+| `gomokuBg` / `huntBg` | `#F4EFE7` | 暖灰白（有底色感，与纯白棋子拉开差） |
+| `gomokuLine` / `huntLine` | `#A9B2BF` | 中灰 —— 线终于「看得见」 |
+| `stoneEdge` | `#8E99A8` | 白子描边加深，成为与盘底的主要区分手段 |
+| `huntHidden` | `#FBF7F1` | 未翻格比底略浅，与底区分但不抢眼 |
+| `huntEmpty` | `#FFFFFF` | 已翻空格比未翻更亮（翻开的语义） |
+
+配套代码：白子描边 6%→**8% 且至少 2px**；黑子也加同色描边让边缘更实；
+两盘网格线线宽 3%/5% → **统一 6%**。`UITheme.ts` 的 `BOARD` 上方补了
+「白子不能与盘底同色 / 网格线不能再浅」的硬约束注释。
+
+### 本轮验证
+
+| 检查 | 命令 | 结果 |
+| :--- | :--- | :--- |
+| 场景生成 | `node tools/gen-scenes.js` | ✅ 4 场景 |
+| 场景结构 + 层级护栏 | `node tools/validate-scenes.js` | ✅ `ALL_SCENE_VALIDATIONS_PASSED` |
+| 严格类型校验 | `cmd /c typecheck.cmd` | ✅ `TYPECHECK_EXIT=0` |
+| 纯逻辑单测（含本轮回归） | `node tools/test-core.js` | ✅ **49 通过, 0 失败**（原 40） |
+
+新增回归断言（锁住 7.2 的契约，防止再次实参错位）：
+
+- 翻格后 `nextPlayerId` 非空、且从 p1 交接到 p2
+- 翻转结果带 `byPlayerId` 归属
+- **两名玩家相同时 `opponentOf` 返回空** —— 即「构造错误可被检出」
+- 翻中机头 → `extraTurn=true` 且回合**不**切换，但归属仍是翻格者
+
+### 方法：先复现，再修
+
+7.1 和 7.2 都能靠读代码猜出「大概的原因」，但本轮刻意先写了复现脚本，
+用 `tools/test-core.js` 同款的 TS 转译手法加载**真实类**并驱动真实调用序列。
+收益很直接：7.2 的第一版猜测（「客户端没同步回合」）只是**次要**缺陷，
+真正让棋盘死掉的是 `nextPlayerId = ''`；如果不跑一遍，
+修完次要缺陷后症状不变，又得多一轮往返。
+
+复现输出（修复前）：
+
+```
+翻格结果: cell=0 scored=false nextPlayerId=""      ← 空！回合断了
+权威.当前回合(翻后) =                               ← 空
+```
+
+教训与第 4/6 轮同源：**「日志正常但功能不工作」时，把中间值打出来看，
+不要继续在推理链上往下猜。**
+
+---
+
+## 第 8 轮：棋盘外框/线条统一 + HUD 重排 + 寻机头规则改为「换手」
+
+**日期**：2026-09-16
+
+四个需求，其中一个是**游戏规则变更**（影响规则层/协议/测试/文案），
+其余三个是视觉与信息层次调整。
+
+### 8.1 棋盘四周加粗外框 + 线条颜色粗细统一
+
+**问题**：棋盘只是一堆细线，看不出「一块板」的边界，会「浮」在页面上。
+且两盘的线条**颜色和粗细都不同**（五子棋 5%、寻机头 3%，各自写死）。
+
+**修复**：把「外框 / 线条」抽到 `BoardBase` 共用，两盘**只能**从这里取：
+
+| 方法 | 作用 |
+| :--- | :--- |
+| `gridLineWidth()` | 网格线宽 = 格子尺寸 6%，夹在 [1,3]（**两盘同一个公式**） |
+| `borderLineWidth()` | 外框 = 网格线 × 3，至少 4px |
+| `boardPad()` | 底板外扩边距（外框与网格之间留白） |
+| `drawBoardFrame(g, bg, line)` | 底板 + **加粗外框**（线心内缩半个线宽，避免被裁） |
+| `drawGridLines(g, line, n, step)` | 统一线宽的竖线 + 横线 |
+
+颜色令牌也合并：原来 `gomokuLine` / `huntLine` 两个值，现在统一为
+**`BOARD.boardLine = '#B9C0CA'`**（两盘线条 + 外框同色）。
+
+> 抽成共用方法而不是「两边改成一样的数字」，是因为**数字可以再次被改散**。
+> 现在改一处两盘同步，这是结构上的保证，不是纪律上的。
+
+### 8.2 Game 页双方布局重排 + 回合归属显示
+
+**问题（真 bug）**：`_myTurnLabel` 和 `_oppTurnLabel` **指向同一个节点**
+（都是 `Canvas/Hud/TurnLabel`），`_refreshHud` 与 `_hudTick` 里两条分支
+每帧互相覆盖 —— 这就是「看不出当前是谁的回合」的直接原因。
+而原布局把双方信息塞成两行、分数靠右，双方关系也不清楚。
+
+**修复**：
+
+| 项 | 改动 |
+| :--- | :--- |
+| HUD 高度 | 220 → 248（腾出独立的「回合行」与「机头进度行」） |
+| 双栏布局 | 左右两栏 = **对手 \| 我**（各 328 宽），中缝一条 1px 竖分隔线 |
+| 分数 | 升级为 `FONT.display` 大字，两栏各自居中（原来挤在右侧一列） |
+| 回合指示 | **一个** `Hud/TurnLabel` + 两个高亮圆点 `Hud/MyTurnMark` / `Hud/OppTurnMark`（◆ 只出现在当前回合方） |
+| 回合高亮 | 当前回合方的**昵称**提色（主色），另一侧压暗；文案颜色 我=绿 / 对手=橙 |
+| 渲染入口 | 抽出 `_renderTurn(myTurn)`，返回「文案是否变化」→ 只有真变化才重置倒计时（否则每帧都重置） |
+
+### 8.3 寻机头额外显示「已找到机头数 n / 5」
+
+新增 `Hud/HeadsLabel`，由 `GameScene` 每帧从棋盘读
+`getHeadsFound()` / `getHeadTotal()` 写入；全部找齐时变色为成功色。
+`PlaneHuntBoard` 新增这两个 getter（数据来自权威下发的 `setTurn(...)`）。
+非寻机头对局将其置为空格隐藏。
+
+### 8.4 规则变更：翻到机头**不再**奖励连翻，直接换手
+
+**原因**（用户实测反馈）：一方连翻、对手干等，回合归属在 UI 上很难看懂，
+且与「交替行动」的直觉不符。
+
+**改动**：`PlaneHuntRules.applyFlip()` 里删掉 `extraTurn` 分支，
+只要对局未结束就 `_currentPlayerId = opponentOf(playerId)`。
+`extraTurn` 字段**保留**在协议里恒为 `false`（不破坏消息结构）。
+
+连带修正的几处（容易漏，记下来）：
+
+| 位置 | 改动 |
+| :--- | :--- |
+| `PlaneHuntBoard.showBonusTip` | 改名 `showScoreTip`，文案「机头！再翻一次」→「**机头！+1 分**」（原文案在新规则下是错的） |
+| `PlaneHuntGame._applyFlipResult` | 触发条件从 `p.extraTurn` 改为 `p.scored`（前者恒 false，提示会永不出现） |
+| `tools/test-core.js` | 6 条断言原本锁死旧规则（含「翻 3 个机头靠连翻」的测试前提），改为按当前回合交替翻格；新增「先手拿 3 个 / 后手拿 2 个 / 先手胜」的明确断言 |
+
+> ⚠️ 规则变更必然让「编码了旧规则的测试」失败 —— 这**不是**测试坏了，
+> 是它在正确地报警。本轮 6 条 FAIL 全部属于此类，逐条改成新契约。
+> AI 侧无需改动：它只查 `rules.currentPlayerId`，天然跟随回合。
+
+### 8.5 顺带加的两道护栏（都是「我手工核过、所以要变成自动的」）
+
+1. **Game 场景 HUD 路径契约 + 纵向不重叠断言**（`validate-scenes.js` 新增 B2 节）：
+   - GameScene 按**路径字符串**绑定 HUD 节点，改名/挪位不会报错、只会静默失效；
+   - 各区块是绝对定位的，改一处高度就可能压到别处（本轮 HUD 加高时差点压到棋盘）。
+   - 断言 9 个 HUD 节点路径齐全 + `Hud / BoardArea / EmotePanel / ActionBar`
+     自上而下依次不重叠。**已用「故意把棋盘上移到 y=200」验证可证伪**：
+     正确报出 `FAIL Hud 与 BoardArea 纵向不重叠（间隙 -140px）`。
+2. 空 Label 拦截：`HeadsLabel` 初值不能给空串，否则 `validate-scenes.js`
+   报「所有 Label 有非空 _string」失败 —— 这条既有规则本轮真的拦住了我一次，
+   说明它在干活。
+
+### 本轮验证
+
+| 检查 | 命令 | 结果 |
+| :--- | :--- | :--- |
+| 场景生成 | `node tools/gen-scenes.js` | ✅ 4 场景（Game 增至 29 节点 / 14 Label） |
+| 场景结构 + HUD 契约 + 不重叠 + 层级护栏 | `node tools/validate-scenes.js` | ✅ `ALL_SCENE_VALIDATIONS_PASSED` |
+| 严格类型校验 | `cmd /c typecheck.cmd` | ✅ `TYPECHECK_EXIT=0` |
+| 纯逻辑单测 | `node tools/test-core.js` | ✅ **52 通过, 0 失败** |
+| 新断言可证伪 | 故意让棋盘与 HUD 重叠 | ✅ 正确报 FAIL（间隙 -140px） |
+
+**仍需真人确认**（我无法渲染）：外框粗细是否合适、双栏 HUD 的信息层次是否好读、
+「◆ 高亮 + 昵称提色」能否一眼看出回合归属、两盘线条观感是否统一。
 
 ---
 

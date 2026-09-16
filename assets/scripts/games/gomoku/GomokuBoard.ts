@@ -30,9 +30,10 @@ import { GomokuRules, Stone } from './GomokuRules';
 
 const { ccclass } = _decorator;
 
-/** 棋盘配色（取自设计令牌 BOARD）：白底细线，扁平简约。 */
-const COLOR_BG = hexToColor(BOARD.gomokuBg); // 棋盘底（白）
-const COLOR_GRID = hexToColor(BOARD.gomokuLine); // 网格线（浅灰）
+/** 棋盘配色（取自设计令牌 BOARD）：暖白底 + 统一中灰线，扁平简约。 */
+const COLOR_BG = hexToColor(BOARD.gomokuBg); // 棋盘底（暖灰白）
+/** 网格线 **与外框同色**（两盘统一取自 BOARD.boardLine） */
+const COLOR_GRID = hexToColor(BOARD.boardLine);
 const COLOR_STAR = hexToColor(BOARD.gomokuStar);
 const COLOR_BLACK = hexToColor(BOARD.blackStone);
 const COLOR_WHITE = hexToColor(BOARD.whiteStone);
@@ -55,33 +56,17 @@ class GomokuBoardRenderer extends BoardBase {
         if (!g) {
             return;
         }
-        const { cellSize, boardWidth, boardHeight } = this._layout;
+        const { cellSize, boardWidth } = this._layout;
         if (cellSize <= 0) {
             return;
         }
 
-        // 底板内边距：宁可小于期望值，也不许溢出父卡片（否则白的底板会盖掉卡片 1px 描边）
-        const pad = Math.max(0, Math.min(Math.max(4, Math.floor(cellSize * 0.28)), Math.floor(this.innerMargin())));
-        this.fillRect(g, -boardWidth / 2 - pad, -boardHeight / 2 - pad, boardWidth + pad * 2, boardHeight + pad * 2, COLOR_BG);
+        // 底板 + **加粗外框**（共用实现：线色/线宽与寻机头完全一致）
+        this.drawBoardFrame(g, COLOR_BG, COLOR_GRID);
 
-        // 网格线
-        g.lineWidth = Math.max(1, Math.floor(cellSize * 0.05));
-        g.strokeColor = COLOR_GRID;
-
-        // 竖线
-        for (let c = 0; c < this._cols; c++) {
-            const x = -boardWidth / 2 + c * cellSize;
-            g.moveTo(x, -boardHeight / 2);
-            g.lineTo(x, boardHeight / 2);
-            g.stroke();
-        }
-        // 横线
-        for (let r = 0; r < this._rows; r++) {
-            const y = -boardHeight / 2 + r * cellSize;
-            g.moveTo(-boardWidth / 2, y);
-            g.lineTo(boardWidth / 2, y);
-            g.stroke();
-        }
+        // 网格线：线宽/颜色统一由 BoardBase 提供，与外框同色
+        // 五子棋的线画在**交叉点**上（c=0..14 共 15 条），故 spacing=rows-1
+        this.drawGridLines(g, COLOR_GRID, this._cols - 1, cellSize);
 
         // 星位（15×15 标准 5 个：天元 + 四星）
         const stars: Array<[number, number]> = [
@@ -92,7 +77,7 @@ class GomokuBoardRenderer extends BoardBase {
             [11, 11],
         ];
         g.fillColor = COLOR_STAR;
-        const starR = Math.max(2, Math.floor(cellSize * 0.12));
+        const starR = Math.max(3, Math.floor(cellSize * 0.16));
         for (const [r, c] of stars) {
             const pos = this.cellToLocal(r, c);
             g.circle(pos.x, pos.y, starR);
@@ -308,13 +293,24 @@ export class GomokuBoard extends Component {
 
         const g = node.addComponent(Graphics);
         const r = size / 2;
+
+        // 黑子：实心 + 同色描边（描边让边缘更「实」，避免抗锯齿发灰）
+        // 白子：纯白实心 + **明显加深的描边** —— 白子与棋盘底（暖灰白）靠
+        // 描边拉开边界，描边太细/太浅时白子会「糊」进棋盘看不见。
         g.fillColor = stone === 1 ? COLOR_BLACK : COLOR_WHITE;
         g.circle(0, 0, r);
         g.fill();
-        // 白子描边，避免与白底棋盘混在一起
+
         if (stone === 2) {
-            g.lineWidth = Math.max(1, Math.floor(size * 0.06));
+            // 描边宽度按棋子尺寸取 8%，并保证至少 2px（1px 在深色描边上太弱）
+            g.lineWidth = Math.max(2, Math.floor(size * 0.08));
             g.strokeColor = COLOR_STONE_EDGE;
+            g.circle(0, 0, r);
+            g.stroke();
+        } else {
+            // 黑子也给一圈同色描边，形状更饱满
+            g.lineWidth = Math.max(1, Math.floor(size * 0.05));
+            g.strokeColor = COLOR_BLACK;
             g.circle(0, 0, r);
             g.stroke();
         }

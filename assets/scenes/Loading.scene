@@ -1422,7 +1422,7 @@
     },
     "_enabled": true,
     "__prefab": null,
-    "_string": "v0.1.0  |  微信小游戏  |  720x1280",
+    "_string": "v0.1.1  |  Mock 预览模式  |  720x1280",
     "_horizontalAlign": 1,
     "_verticalAlign": 1,
     "_actualFontSize": 20,

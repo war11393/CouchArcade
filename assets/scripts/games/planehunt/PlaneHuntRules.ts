@@ -3,10 +3,16 @@
  *
  * 规则：
  * - 棋盘 12×12，双方轮流点击翻格子；
- * - 翻到机头：计入当前玩家得分，并奖励额外一次翻格（连续翻中连续奖励）；
+ * - 翻到机头：计入当前玩家得分，**回合照常交给对手**（不奖励连翻）；
  * - 翻到机身：仅揭示，回合结束；
  * - 翻到空格：无收获，回合结束；
  * - 胜负：5 个机头全部翻出后结束，机头多者胜，相同为平局。
+ *
+ * ⚠️ 关于「不奖励连翻」：早期实现让翻中机头的一方连翻一次。
+ *    实测体验是「一方连翻、对手干等」，回合归属在 UI 上很难看懂，
+ *    且与「交替行动」的直觉不符，故改为**翻到机头也换手**。
+ *    `extraTurn` 字段保留在协议里恒为 false，是为了不破坏既有的消息结构
+ *    （前端仍会读它来决定是否弹「再翻一次」提示）。
  *
  * 权威模型：本类由「权威裁判」持有（联机/Mock 模式在本地规则层，
  * 第二阶段在云函数），客户端只提交翻格请求并接收结果。
@@ -32,6 +38,8 @@ export interface FlipResult {
     row: number;
     col: number;
     cell: number;
+    /** 翻开该格的玩家（UI 归属用；与 nextPlayerId 不同：翻中机头会连翻，回合不变） */
+    byPlayerId: string;
     scored: boolean;
     extraTurn: boolean;
     headsFound: number;
@@ -82,6 +90,18 @@ export class PlaneHuntRules {
         this.planeCount = AppConfig.PLANEHUNT_PLANE_COUNT;
         this._provider = provider ?? new PlaneHuntLayoutProvider();
         this._layout = this._provider.generate(seed) as PlaneLayout;
+
+        // ⚠️ 防呆：两名玩家 id 必须不同，否则 opponentOf() 永远返回空字符串，
+        //    回合交接会静默失效（nextPlayerId=''),表现为「点了棋盘没反应」。
+        //    真实踩坑：上层把 myPlayerId 同时当 firstPlayerId 和 secondPlayerId 传。
+        if (!secondPlayerId || secondPlayerId === firstPlayerId) {
+            console.error(
+                `[PlaneHuntRules] 构造参数异常：两名玩家 id 相同或为空 ` +
+                    `(first='${firstPlayerId}' second='${secondPlayerId}')。` +
+                    `回合将无法交接，请检查调用方实参顺序。`,
+            );
+        }
+
         this._scores.set(firstPlayerId, 0);
         this._scores.set(secondPlayerId, 0);
         this._moves.set(firstPlayerId, 0);
@@ -226,9 +246,9 @@ export class PlaneHuntRules {
             this._finish();
         }
 
-        // 翻中机头奖励额外一次（连续奖励）；否则切换回合
-        const extraTurn = scored && !this._finished;
-        if (!extraTurn && !this._finished) {
+        // 回合交接：无论翻到什么（机头/机身/空），只要对局未结束就换手。
+        // 不再有「翻中机头奖励连翻」—— 见文件头的规则说明。
+        if (!this._finished) {
             this._currentPlayerId = this.opponentOf(playerId);
         }
 
@@ -236,8 +256,10 @@ export class PlaneHuntRules {
             row,
             col,
             cell,
+            byPlayerId: playerId,
             scored,
-            extraTurn,
+            // 恒为 false：保留字段以兼容既有消息结构，前端据此不弹「再翻一次」
+            extraTurn: false,
             headsFound: this._headsFound,
             score: this._scores.get(playerId) ?? 0,
             nextPlayerId: this._currentPlayerId,

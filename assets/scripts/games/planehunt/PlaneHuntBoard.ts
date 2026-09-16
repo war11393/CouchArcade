@@ -32,7 +32,8 @@ const { ccclass } = _decorator;
 
 /** 配色：浅色扁平棋盘（取自设计令牌 BOARD，与页面白底同调）。 */
 const COLOR_BG = hexToColor(BOARD.huntBg);
-const COLOR_GRID = hexToColor(BOARD.huntLine);
+/** 网格线 **与外框同色**（两盘统一取自 BOARD.boardLine） */
+const COLOR_GRID = hexToColor(BOARD.boardLine);
 const COLOR_CELL_HIDDEN = hexToColor(BOARD.huntHidden);
 const COLOR_CELL_EMPTY = hexToColor(BOARD.huntEmpty);
 const COLOR_BODY = hexToColor(BOARD.huntBody);
@@ -77,23 +78,15 @@ class PlaneHuntRenderer extends BoardBase {
         if (!g) {
             return;
         }
-        const { cellSize, boardWidth, boardHeight } = this._layout;
+        const { cellSize } = this._layout;
         if (cellSize <= 0) {
             return;
         }
 
-        // 底板内边距：不许溢出父卡片（白底板外扩会盖掉卡片的 1px 描边）
-        const pad = Math.max(0, Math.min(Math.max(4, Math.floor(cellSize * 0.25)), Math.floor(this.innerMargin())));
-        // 底板
-        this.fillRect(
-            g,
-            -boardWidth / 2 - pad,
-            -boardHeight / 2 - pad,
-            boardWidth + pad * 2,
-            boardHeight + pad * 2,
-            COLOR_BG,
-        );
+        // 底板 + **加粗外框**（与五子棋共用同一实现 → 线色/线宽完全一致）
+        this.drawBoardFrame(g, COLOR_BG, COLOR_GRID);
 
+        // 格子填充（未翻 / 已翻），铺在网格线之下
         const inset = Math.max(1, Math.floor(cellSize * 0.06));
         for (let r = 0; r < this._rows; r++) {
             for (let c = 0; c < this._cols; c++) {
@@ -114,21 +107,8 @@ class PlaneHuntRenderer extends BoardBase {
             }
         }
 
-        // 网格线（细边，增强「格子」感）
-        g.lineWidth = Math.max(1, Math.floor(cellSize * 0.03));
-        g.strokeColor = COLOR_GRID;
-        for (let c = 0; c <= this._cols; c++) {
-            const x = -boardWidth / 2 + c * cellSize;
-            g.moveTo(x, -boardHeight / 2);
-            g.lineTo(x, boardHeight / 2);
-            g.stroke();
-        }
-        for (let r = 0; r <= this._rows; r++) {
-            const y = -boardHeight / 2 + r * cellSize;
-            g.moveTo(-boardWidth / 2, y);
-            g.lineTo(boardWidth / 2, y);
-            g.stroke();
-        }
+        // 网格线：与五子棋同色同粗（线画在格子边界上，故 spacing = 行列数）
+        this.drawGridLines(g, COLOR_GRID, this._cols, cellSize);
     }
 }
 
@@ -150,6 +130,9 @@ export class PlaneHuntBoard extends Component {
     private _myPlayerId = '';
     private _firstPlayerId = '';
     private _isMyTurn = false;
+    /** 已找到的机头数 / 总数（HUD 读取，随权威下发更新）。 */
+    private _headsFound = 0;
+    private _headTotal = AppConfig.PLANEHUNT_PLANE_COUNT;
 
     // ==================== 生命周期 ====================
 
@@ -207,10 +190,18 @@ export class PlaneHuntBoard extends Component {
     /**
      * 揭示一格（权威结果下发后调用）。
      *
+     * @param byMe true = 这一格是我翻的（用于得分/翻格数归属）
      * @param scored 是否翻中机头
      * @param score 该玩家累计得分
      */
-    public revealCell(row: number, col: number, cell: number, scored: boolean, score: number): void {
+    public revealCell(
+        row: number,
+        col: number,
+        cell: number,
+        byMe: boolean,
+        scored: boolean,
+        score: number,
+    ): void {
         this._renderer.setRevealed(row, col, cell);
         this._renderer.draw();
 
@@ -237,11 +228,12 @@ export class PlaneHuntBoard extends Component {
         mark.setScale(new Vec3(0.3, 0.3, 1));
         tween(mark).to(0.15, { scale: new Vec3(1.05, 1.05, 1) }).to(0.08, { scale: new Vec3(1, 1, 1) }).start();
 
-        // 统计
-        const isMine = this._isMyTurn;
-        if (isMine) {
+        // 统计归属：必须按「谁翻的」判定，而不是按「翻完后轮到谁」。
+        // 曾经的写法用 this._isMyTurn（回合状态，在 setTurn 之后已被切成对手），
+        // 会把对手翻到的机头算到我方头上，双方得分整体错位。
+        if (byMe) {
             this._myFlips++;
-            this._myScore = this._myPlayerId === this._firstPlayerId ? score : score;
+            this._myScore = score;
         } else {
             this._oppFlips++;
             this._oppScore = score;
@@ -252,19 +244,36 @@ export class PlaneHuntBoard extends Component {
     /** 更新回合状态与进度（由 Game 驱动）。 */
     public setTurn(isMyTurn: boolean, headsFound: number, headTotal: number): void {
         this._isMyTurn = isMyTurn;
+        this._headsFound = headsFound;
+        this._headTotal = headTotal;
         this.setInputEnabled(isMyTurn);
         if (AppConfig.LOG_VERBOSE) {
             console.log(`[PlaneHuntBoard] 回合更新 我方=${isMyTurn} 机头进度=${headsFound}/${headTotal}`);
         }
     }
 
-    /** 翻中机头奖励提示。 */
-    public showBonusTip(): void {
-        const node = newUINode('bonusTip');
+    /** 已找到的机头数（HUD 显示进度用）。 */
+    public getHeadsFound(): number {
+        return this._headsFound;
+    }
+
+    /** 机头总数（HUD 显示进度用）。 */
+    public getHeadTotal(): number {
+        return this._headTotal;
+    }
+
+    /**
+     * 翻中机头的得分提示。
+     *
+     * 注意：文案**不能**再写「再翻一次」—— 当前规则是翻到机头也换手
+     * （见 PlaneHuntRules 文件头）。这里只表达「得分 +1」。
+     */
+    public showScoreTip(): void {
+        const node = newUINode('scoreTip');
         this.node.addChild(node);
         node.addComponent(UITransform);
         const label = node.addComponent(Label);
-        label.string = '机头！再翻一次';
+        label.string = '机头！+1 分';
         label.fontSize = 34;
         label.color = COLOR_HEAD;
         node.setPosition(new Vec3(0, 0, 0));

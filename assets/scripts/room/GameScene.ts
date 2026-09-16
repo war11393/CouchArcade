@@ -46,11 +46,21 @@ export class GameScene extends Component {
     private _savedRecord = false;
 
     /** HUD 引用。 */
-    private _oppTurnLabel: Label | null = null;
-    private _myTurnLabel: Label | null = null;
+    //
+    // 注意：回合指示只有**一个** Label（TurnLabel）。曾经有 _myTurnLabel 与
+    // _oppTurnLabel 两个字段都指向同一个节点，导致两条分支互相覆盖 —— 那是
+    // 「看不出当前是谁的回合」的直接原因。现在改为「一个回合文案 + 两个高亮点」。
+    private _turnLabel: Label | null = null;
+    /** 对手 / 我 的回合高亮圆点（◆，仅当前回合方显示）。 */
+    private _oppTurnMark: Label | null = null;
+    private _myTurnMark: Label | null = null;
+    /** 寻机头专用：已找到的机头数文案。 */
+    private _headsLabel: Label | null = null;
     private _timerLabel: Label | null = null;
     private _oppScoreLabel: Label | null = null;
     private _myScoreLabel: Label | null = null;
+    private _oppNameLabel: Label | null = null;
+    private _myNameLabel: Label | null = null;
     private _emotePanel: Node | null = null;
 
     protected onLoad(): void {
@@ -140,11 +150,27 @@ export class GameScene extends Component {
         setLabelText(this.node, 'Canvas/Hud/TurnLabel', '对局开始');
         setLabelText(this.node, 'Canvas/Hud/TimerLabel', `${AppConfig.TURN_TIME_LIMIT_SEC}s`);
 
-        this._oppTurnLabel = labelAt(this.node, 'Canvas/Hud/TurnLabel');
-        this._myTurnLabel = labelAt(this.node, 'Canvas/Hud/TurnLabel');
+        // ⚠️ 回合指示是**一个**节点，不是「我方/对手各一个」。
+        //    早期实现把 _myTurnLabel 和 _oppTurnLabel 都指向 Hud/TurnLabel，
+        //    两个分支每帧互相覆盖，导致回合文案闪烁/看起来「不显示当前回合」。
+        //    现在只保留一个引用 + 两个「回合高亮圆点」（对手/我 各一个）。
+        this._turnLabel = labelAt(this.node, 'Canvas/Hud/TurnLabel');
+        this._oppTurnMark = labelAt(this.node, 'Canvas/Hud/OppTurnMark');
+        this._myTurnMark = labelAt(this.node, 'Canvas/Hud/MyTurnMark');
+        this._headsLabel = labelAt(this.node, 'Canvas/Hud/HeadsLabel');
         this._oppScoreLabel = labelAt(this.node, 'Canvas/Hud/OppScore');
         this._myScoreLabel = labelAt(this.node, 'Canvas/Hud/MyScore');
         this._timerLabel = labelAt(this.node, 'Canvas/Hud/TimerLabel');
+
+        // 名字标签的默认色（回合高亮时改成主题色，恢复时用这两个值）
+        this._oppNameLabel = labelAt(this.node, 'Canvas/Hud/OppName');
+        this._myNameLabel = labelAt(this.node, 'Canvas/Hud/MyName');
+
+        // 非寻机头对局：隐藏机头计数（置空格而不是隐藏节点，
+        // 避免 validate-scenes 的「Label 非空」断言被破坏）
+        if (this._ctx && this._ctx.room.gameId !== GameId.PLANE_HUNT) {
+            setLabelText(this.node, 'Canvas/Hud/HeadsLabel', ' ');
+        }
 
         // 棋盘挂载点（静态存在，棋盘内容由 BoardBase 动态绘制）
         const boardArea = findNode(this.node, 'Canvas/BoardArea');
@@ -250,11 +276,20 @@ export class GameScene extends Component {
             forceUILayer(boardNode);
 
             if (ctx.mode === 'ai') {
+                // ⚠️ 实参顺序必须对齐 PlaneHuntAuthority 的构造函数签名：
+                //     (roomId, firstPlayerId, secondPlayerId, aiPlayerId, seed, level)
+                // 曾经的写法把 ctx.myPlayerId 当 secondPlayerId 传了进去 ——
+                // 当「我 = 先手」时两个座位都是我自己，opponentOf() 找不到对手，
+                // 于是下发结果里 nextPlayerId 为空字符串，客户端 isMyTurn() 恒为 false，
+                // 表现为「点了棋盘没有任何反应」（与五子棋 Authority 的签名不同，极易踩）。
+                const oppId = ctx.opponent.playerId;
+                const firstId = ctx.firstPlayerId || ctx.room.seats[0].playerId;
+                const secondId = firstId === ctx.myPlayerId ? oppId : ctx.myPlayerId;
                 const auth = new PlaneHuntAuthority(
                     ctx.room.roomId,
-                    ctx.firstPlayerId,
-                    ctx.myPlayerId,
-                    ctx.opponent.playerId,
+                    firstId,
+                    secondId,
+                    oppId,
                     ctx.seed,
                     ctx.opponent.aiLevel,
                 );
@@ -344,17 +379,50 @@ export class GameScene extends Component {
         if (!game || !this._ctx) {
             return;
         }
-        const myTurn = game.isMyTurn();
-
-        if (this._myTurnLabel) {
-            this._myTurnLabel.string = myTurn ? '● 你的回合' : '等待对手';
-            this._myTurnLabel.color = myTurn ? THEME.success : THEME.textDim;
-        }
-        if (this._oppTurnLabel) {
-            this._oppTurnLabel.string = myTurn ? '等待中' : '● 对手回合';
-            this._oppTurnLabel.color = myTurn ? THEME.textDim : THEME.warn;
-        }
+        this._renderTurn(game.isMyTurn());
         this._resetTimer();
+    }
+
+    /**
+     * 渲染「当前是谁的回合」。
+     *
+     * 三处同时表达，避免只靠一行文字（手机上容易看漏）：
+     *   1. Hud/TurnLabel 文案 + 颜色（我的回合=绿，对手=橙）
+     *   2. ◆ 高亮圆点只出现在当前回合方那一栏
+     *   3. 当前回合方的**昵称**加粗提色（另一侧压暗）
+     *
+     * @returns 状态是否发生变化（用于决定要不要重置倒计时）
+     */
+    private _renderTurn(myTurn: boolean): boolean {
+        let changed = false;
+
+        if (this._turnLabel) {
+            const text = myTurn ? '● 你的回合' : '● 对手回合';
+            const color = myTurn ? THEME.success : THEME.warn;
+            if (this._turnLabel.string !== text) {
+                changed = true;
+            }
+            this._turnLabel.string = text;
+            this._turnLabel.color = color;
+        }
+
+        // 高亮圆点：只在当前回合方那栏可见（用空格隐藏，避免动节点树）
+        if (this._myTurnMark) {
+            this._myTurnMark.string = myTurn ? '◆' : ' ';
+        }
+        if (this._oppTurnMark) {
+            this._oppTurnMark.string = myTurn ? ' ' : '◆';
+        }
+
+        // 昵称：当前回合方高亮
+        if (this._myNameLabel) {
+            this._myNameLabel.color = myTurn ? THEME.primary : THEME.textDim;
+        }
+        if (this._oppNameLabel) {
+            this._oppNameLabel.color = myTurn ? THEME.textDim : THEME.primary;
+        }
+
+        return changed;
     }
 
     /** 定期刷新 HUD（轮询，避免侵入各游戏内部状态机）。 */
@@ -362,23 +430,12 @@ export class GameScene extends Component {
         if (!this._game || !this._ctx) {
             return;
         }
-        // 回合指示
-        const myTurn = this._game.isMyTurn();
-        if (this._myTurnLabel) {
-            const shouldShow = myTurn ? '● 你的回合' : '等待对手';
-            if (this._myTurnLabel.string !== shouldShow) {
-                this._myTurnLabel.string = shouldShow;
-                this._myTurnLabel.color = myTurn ? THEME.success : THEME.textDim;
-                this._resetTimer();
-            }
-        }
-        if (this._oppTurnLabel) {
-            const t = myTurn ? '等待中' : '● 对手回合';
-            this._oppTurnLabel.string = t;
-            this._oppTurnLabel.color = myTurn ? THEME.textDim : THEME.warn;
+        // 回合指示：文案真的变了才重置计时（否则每帧都会重置）
+        if (this._renderTurn(this._game.isMyTurn())) {
+            this._resetTimer();
         }
 
-        // 得分（寻机头）
+        // 得分 + 机头进度（寻机头）
         if (this._ctx.room.gameId === GameId.PLANE_HUNT) {
             const board = this._boardNode?.getChildByName('PlaneHuntBoard')?.getComponent(PlaneHuntBoard);
             if (board) {
@@ -387,6 +444,17 @@ export class GameScene extends Component {
                 }
                 if (this._oppScoreLabel) {
                     this._oppScoreLabel.string = String(board.getOppScore());
+                }
+                // 机头进度：已找到 n / 总数（寻机头特有的关键信息 ——
+                // 对局何时结束只取决于这个数字，玩家必须随时看得到）
+                if (this._headsLabel) {
+                    const found = board.getHeadsFound();
+                    const total = board.getHeadTotal();
+                    const text = `已找到机头 ${found} / ${total}`;
+                    if (this._headsLabel.string !== text) {
+                        this._headsLabel.string = text;
+                    }
+                    this._headsLabel.color = found >= total ? THEME.success : THEME.textDim;
                 }
             }
         }

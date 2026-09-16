@@ -78,6 +78,13 @@ export class MockRoomService implements IRoomService {
         if (practice) {
             // AI 练习：直接补满 AI 并置 READY，跳过等待
             this._fillAiSeats(aiLevel);
+            // 练习房里 AI 视为就绪：不标记的话，任何一次 _refreshReadyStatus
+            // 都会把 READY 打回 WAITING（见该方法的说明）。
+            for (const s of this._room.seats) {
+                if (s.isAI) {
+                    s.ready = true;
+                }
+            }
             this._setStatus(RoomStatus.READY);
             console.log('[MockRoom] AI 练习房：已跳过等待，直接进入准备完成状态');
         } else {
@@ -178,8 +185,14 @@ export class MockRoomService implements IRoomService {
         if (room.ownerId !== this._myId()) {
             throw new Error('只有房主可以开局');
         }
-        if (room.status !== RoomStatus.READY) {
-            throw new Error('全员准备后才能开局');
+        if (room.status !== RoomStatus.READY && !room.isPractice) {
+            // 把实际状态打进错误里，便于一眼定位「为什么不能开局」
+            const seatBrief = room.seats
+                .map((s) => `${s.nickname}${s.isAI ? '[AI]' : ''}${s.ready ? '✓' : '✗'}`)
+                .join(', ');
+            throw new Error(
+                `全员准备后才能开局（当前 status=${room.status} isPractice=${room.isPractice} 座位=[${seatBrief}]）`,
+            );
         }
 
         this._clearTimers();
@@ -382,12 +395,26 @@ export class MockRoomService implements IRoomService {
 
     private _refreshReadyStatus(): void {
         const room = this._requireRoom();
+
+        // AI 练习房：AI 座位视为「始终就绪」，不参与准备判定。
+        // 这是必需的兜底 —— 否则只要有任何一次 _refreshReadyStatus 调用
+        // （例如玩家误点「准备」按钮、或将来新增的状态刷新），
+        // allReady 因 AI 座位 ready=false 而为 false，
+        // 就会把已经 READY 的练习房打回 WAITING，
+        // 随后自动开局必然抛「全员准备后才能开局」。
+        if (room.isPractice) {
+            if (room.status !== RoomStatus.PLAYING) {
+                this._setStatus(RoomStatus.READY);
+            }
+            return;
+        }
+
         const allReady = room.seats.every((s) => s.playerId !== '' && s.ready);
         if (allReady && room.status === RoomStatus.WAITING) {
             this._setStatus(RoomStatus.READY);
             console.log('[MockRoom] 全员已准备，房主可开局');
         } else if (!allReady && room.status === RoomStatus.READY) {
-            // 有人取消准备则回到等待
+            // 有人取消准备则回到等待（仅联机房）
             this._setStatus(RoomStatus.WAITING);
         }
     }

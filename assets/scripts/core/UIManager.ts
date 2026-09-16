@@ -18,7 +18,10 @@ import {
     director,
     Label,
     Layers,
+    Mask,
+    MaskType,
     Node,
+    ScrollView,
     UIOpacity,
     UITransform,
     Vec3,
@@ -38,6 +41,7 @@ import {
     createLabel,
     createRect,
     makeFullScreen,
+    newUINode,
 } from './UIFactory';
 import { FONT, RADIUS, overlayColor } from '../config/UITheme';
 
@@ -266,28 +270,84 @@ export class UIManager {
         // 出现「弹窗上的点击又触发了一次开始游戏」的诡异行为。
         maskNode.addComponent(BlockInputEvents);
 
-        const panelH = 200 + opts.choices.length * 110;
-        const panel = createCard('ChoicePanel', 600, panelH);
+        // ---------- 尺寸规格（改小 + 分区，消除「选项压住取消按钮」） ----------
+        const PANEL_W = 600;
+        const BTN_W = 440;
+        /** 单个选项按钮高（原 88 偏大，收紧到 72） */
+        const OPT_H = 72;
+        /** 选项间距 */
+        const OPT_GAP = 14;
+        /** 选项区最大高度：超出即滚动 */
+        const OPT_VIEW_H = 300;
+        const titleBlockH = 120; // 标题 + 副标题
+        const cancelBlockH = 104; // 取消按钮 + 上下留白
+
+        const contentH = opts.choices.length * OPT_H + Math.max(0, opts.choices.length - 1) * OPT_GAP;
+        const viewH = Math.min(OPT_VIEW_H, Math.max(OPT_H, contentH));
+        const panelH = titleBlockH + viewH + cancelBlockH;
+
+        const panel = createCard('ChoicePanel', PANEL_W, panelH);
         maskNode.addChild(panel);
 
-        const titleNode = createLabel('title', opts.title, FONT.h1, THEME.text, 520);
+        // 标题区（面板顶部，居中）
+        const topY = panelH / 2;
+        const titleNode = createLabel('title', opts.title, FONT.h1, THEME.text, PANEL_W - 80);
         panel.addChild(titleNode);
-        titleNode.setPosition(new Vec3(0, panelH / 2 - 70, 0));
+        titleNode.setPosition(new Vec3(0, topY - 62, 0));
 
         if (opts.subtitle) {
-            const sub = createLabel('sub', opts.subtitle, FONT.sub, THEME.textDim, 520);
+            const sub = createLabel('sub', opts.subtitle, FONT.sub, THEME.textDim, PANEL_W - 80);
             panel.addChild(sub);
-            sub.setPosition(new Vec3(0, panelH / 2 - 120, 0));
+            sub.setPosition(new Vec3(0, topY - 104, 0));
         }
 
-        // 选项按钮（自上而下排布）：主色淡底 + 主色字（扁平、弱化视觉噪音）
-        let y = panelH / 2 - 190;
-        for (const c of opts.choices) {
+        // ---------- 选项区：ScrollView（纵向，超长才滚动） ----------
+        //
+        // 为什么用 ScrollView 而不是直接排布：
+        //   选项数量/文案长度都是「配置驱动」的，将来可能加「人机难度」「好友房」
+        //   等更多入口。直接绝对定位排布时，选项一多就会压到下面的取消按钮上
+        //   （本项目真实出现过）。用可滚动容器后，无论多少个选项都不会越界，
+        //   且面板总高有上界，不会顶到屏幕外。
+        const viewY = topY - titleBlockH - viewH / 2;
+        const svRoot = newUINode('ChoiceOptionsView');
+        panel.addChild(svRoot);
+        svRoot.setPosition(new Vec3(0, viewY, 0));
+        const svUT = svRoot.addComponent(UITransform);
+        svUT.setContentSize(PANEL_W, viewH);
+
+        // ScrollView 需要一个带 Mask 的 view 子节点承载 content
+        const viewNode = newUINode('view');
+        svRoot.addChild(viewNode);
+        const viewUT = viewNode.addComponent(UITransform);
+        viewUT.setContentSize(PANEL_W, viewH);
+        viewUT.setAnchorPoint(0.5, 0.5);
+        viewNode.addComponent(Mask).type = MaskType.GRAPHICS_RECT;
+
+        // content：锚点顶部居中，向下排布（ScrollView 的标准用法）
+        const content = newUINode('content');
+        viewNode.addChild(content);
+        const contentUT = content.addComponent(UITransform);
+        contentUT.setAnchorPoint(0.5, 1);
+        contentUT.setContentSize(PANEL_W, Math.max(contentH, 1));
+        content.setPosition(new Vec3(0, viewH / 2, 0));
+
+        const sv = svRoot.addComponent(ScrollView);
+        sv.content = content;
+        sv.horizontal = false;
+        sv.vertical = true;
+        sv.inertia = true;
+        sv.elastic = true;
+        sv.brake = 0.5;
+        // 短按不应被滚动吞掉：cancelInnerEvents 仅在真的发生滚动时才取消
+        sv.cancelInnerEvents = true;
+
+        // 选项按钮（自上而下）：主色淡底 + 主色字（扁平、弱化视觉噪音）
+        opts.choices.forEach((c, i) => {
             const btn = createButton(
-                `choice_${c.label}`,
+                `choice_${i}_${c.label}`,
                 c.label,
-                472,
-                88,
+                BTN_W,
+                OPT_H,
                 () => {
                     console.log(`[UIManager] 弹窗选项被点击：${c.label}`);
                     maskNode.destroy();
@@ -295,26 +355,33 @@ export class UIManager {
                 },
                 { fill: THEME.primarySoft, textColor: THEME.primary, fontSize: FONT.sub + 2 },
             );
-            panel.addChild(btn);
-            btn.setPosition(new Vec3(0, y, 0));
-            y -= 110;
-        }
+            content.addChild(btn);
+            // content 锚点 (0.5, 1) → 第一个选项中心在 -OPT_H/2
+            btn.setPosition(new Vec3(0, -OPT_H / 2 - i * (OPT_H + OPT_GAP), 0));
+        });
 
-        // 取消
+        // ScrollView 需要 Layout 或手动尺寸都行；这里手动定位，故不加 Layout，
+        // 但要确保 content 高度正确（上面已按内容算好）。
+
+        // ---------- 取消按钮（独立在面板底部，绝不会被选项压住） ----------
         const cancel = createButton(
             'choice_cancel',
             '取消',
-            472,
-            80,
+            BTN_W,
+            68,
             () => maskNode.destroy(),
             { fill: THEME.surfaceAlt, textColor: THEME.textDim, fontSize: FONT.sub, border: THEME.border },
         );
         panel.addChild(cancel);
-        cancel.setPosition(new Vec3(0, -panelH / 2 + 60, 0));
+        cancel.setPosition(new Vec3(0, -panelH / 2 + 56, 0));
 
         // 置顶：只在浮层容器内部置顶（挂 Canvas 会被 GameList 的 Mask 影响）
         maskNode.setSiblingIndex(root.children.length - 1);
-        console.log(`[UIManager] 模式选择弹窗已显示：${opts.title}（父节点=${root.name}）`);
+        console.log(
+            `[UIManager] 模式选择弹窗已显示：${opts.title}（父节点=${root.name}）` +
+                ` 选项=${opts.choices.length} 面板高=${panelH} 选项区高=${viewH} ` +
+                `内容高=${contentH} ${contentH > viewH ? '(需滚动)' : '(无需滚动)'}`,
+        );
 
         // ---- 诊断（临时）：把运行时真实状态打到屏幕上，便于一次预览定位问题 ----
         if (AppConfig.SHOW_DIALOG_DEBUG) {
@@ -357,7 +424,7 @@ export class UIManager {
             `panel pos=(${panel.position.x},${panel.position.y}) active=${panel.activeInHierarchy}`,
             `visibleSize=${size.width}x${size.height} choices=${choiceCount}`,
             `root=${root.name} rootChildren=${root.children.length}`,
-            `相机可见性掩码=${camVis} (UI_2D|UI_3D=${Layers.Enum.UI_2D | Layers.Enum.UI_3D})`,
+            `相机可见性掩码=${camVis}`,
             ...layerLines,
         ];
         const node = createRect('DialogDebug', size.width, lines.length * 34 + 20, THEME.toastBg);

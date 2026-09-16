@@ -46,19 +46,36 @@ export const PALETTE = {
     overlay: '#10131A', // 蒙层基色（配合 alpha 使用）
 } as const;
 
-/** 棋盘配色（浅色扁平，与页面同调）。 */
+/**
+ * 棋盘配色（浅色扁平，与页面同调）。
+ *
+ * ⚠️ 两个硬约束，改色时别踩：
+ *   1. **白子不能与棋盘底同色**。两者原先都是 #FFFFFF，白棋落上去只剩下
+ *      一圈 1px 描边，视觉上「看不见子」。故棋盘底改为暖灰白（有底色感），
+ *      白子保持纯白 + 加深描边，靠「底色差 + 描边」双重区分。
+ *   2. **网格线不能再浅**。原先 #D8DDE4 在 #FFFFFF 上对比度极低，
+ *      15×15 的格子几乎看不出边界。加深到 #A9B2BF 后线才是「看得见的线」。
+ *   3. 星位/棋子/标记的颜色都要与棋盘底拉开至少 3:1 的明度差。
+ */
 export const BOARD = {
-    gomokuBg: '#FFFFFF',
-    gomokuLine: '#D8DDE4',
-    gomokuStar: '#3B4250',
-    blackStone: '#22262F',
+    /** 棋盘底：暖灰白（不是纯白，纯白会和白子糊在一起） */
+    gomokuBg: '#F4EFE7',
+    /** 网格线 / 外框：中灰。**两盘共用同一个值**，保证线条颜色统一 */
+    boardLine: '#B9C0CA',
+    /** 星位：深墨 */
+    gomokuStar: '#2A2F3A',
+    blackStone: '#1E222B',
+    /** 白子：纯白 + 深描边（描边是它与棋盘底的主要区分手段） */
     whiteStone: '#FFFFFF',
-    stoneEdge: '#C9D0DA',
+    /** 白子描边：明显加深（原 #C9D0DA 太浅，白子看起来像「缺口」） */
+    stoneEdge: '#8E99A8',
     lastMark: '#F04438',
     winLine: '#F79009',
-    huntBg: '#FFFFFF',
-    huntLine: '#DFE3E9',
-    huntHidden: '#F1F3F7',
+    /** 寻机头棋盘底：与五子棋同一套暖灰白，保持两盘同一视觉语言 */
+    huntBg: '#F4EFE7',
+    /** 未翻开格：比底略浅的纸色，与底区分但不抢眼 */
+    huntHidden: '#FBF7F1',
+    /** 已翻空例格：纯白（翻开了，所以比未翻的更亮） */
     huntEmpty: '#FFFFFF',
     huntBody: '#2F6BFF',
     huntHead: '#F79009',

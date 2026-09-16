@@ -258,7 +258,9 @@ function loadingTree() {
         pos: [0, -380], size: [640, 34],
     });
 
-    const version = textNode('Version', 'v0.1.0  |  微信小游戏  |  720x1280', FONT.caption, C.inkFaint, {
+    // 占位文本：运行时由 LoadingScene 按 AppConfig.APP_VERSION 刷新
+    // （版本号唯一来源在 AppConfig，这里只负责「非空且不误导」）
+    const version = textNode('Version', 'v0.1.1  |  Mock 预览模式  |  720x1280', FONT.caption, C.inkFaint, {
         pos: [0, -600], size: [660, 34],
     });
 
@@ -448,29 +450,68 @@ function gameTree() {
     const overlay = overlayNode();
 
     // ---- 顶部 HUD：对手行 / 我方行 / 状态行（白底 + 底部 1px 分隔线）----
-    const HUD_H = 220;
-    const HUD_Y = 520;
+    //
+    // 布局意图（本次重排，修掉「双方信息糊成一团 + 回合显示被覆盖」）：
+    //   左右两栏 = 对手 | 我，各占半宽；中间靠一条竖分隔线分开。
+    //   每栏内自上而下：昵称 → 分数（大字）。当前回合方在整个行上高亮。
+    //   底部独立一条「回合指示 + 倒计时」，与双方信息**分成两个视觉层**，
+    //   避免回合文案和玩家信息互相干扰。
+    //
+    //   节点契约（GameScene 按路径绑定，改名要同步）：
+    //     Hud/OppName  Hud/OppScore  Hud/MyName  Hud/MyScore
+    //     Hud/TurnLabel（回合）  Hud/TimerLabel（倒计时）
+    //     Hud/HeadsLabel（寻机头专用：已找到机头 n/5）
+    //     Hud/OppTurnMark / Hud/MyTurnMark（回合高亮圆点，◆ 当前回合）
+    const HUD_H = 248;
+    const HUD_Y = 512;
+    /** 左右两栏中心（画布宽 720，留 gutter 32 → 内容 656；每栏 328） */
+    const COL_L = -164;
+    const COL_R = 164;
     const hud = fillNode('Hud', DESIGN_W, HUD_H, C.surface, {
         pos: [0, HUD_Y],
         children: [
             dividerNode('HudDivider', DESIGN_W, { pos: [0, -HUD_H / 2] }),
-            textNode('OppName', '对手', FONT.body, C.inkSoft, {
-                pos: [-178, 56], size: [320, 40], hAlign: 0,
+
+            // 中缝竖分隔线（两栏的视觉边界）—— 用 fillNode 直接给 1px 宽 × 高
+            fillNode('HudColSplit', 1, HUD_H - 36, C.border, {
+                pos: [0, 4],
             }),
-            textNode('OppScore', '0', FONT.h2, C.danger, {
-                pos: [240, 56], size: [180, 44], hAlign: 2, bold: true,
+
+            // ---- 左栏：对手 ----
+            textNode('OppTurnMark', '◆', FONT.caption + 2, C.warn, {
+                pos: [COL_L - 120, 62], size: [40, 34],
             }),
-            textNode('MyName', '我', FONT.body, C.ink, {
-                pos: [-178, 8], size: [320, 40], hAlign: 0, bold: true,
+            textNode('OppName', '对手', FONT.sub + 2, C.inkSoft, {
+                pos: [COL_L - 40, 62], size: [200, 36], hAlign: 0, overflow: 1,
             }),
-            textNode('MyScore', '0', FONT.h2, C.success, {
-                pos: [240, 8], size: [180, 44], hAlign: 2, bold: true,
+            textNode('OppScore', '0', FONT.display, C.danger, {
+                pos: [COL_L, 8], size: [240, 56], bold: true,
             }),
-            textNode('TurnLabel', '我方回合', FONT.sub, C.warn, {
-                pos: [-178, -58], size: [320, 38], hAlign: 0,
+
+            // ---- 右栏：我 ----
+            textNode('MyTurnMark', '◆', FONT.caption + 2, C.success, {
+                pos: [COL_R - 120, 62], size: [40, 34],
+            }),
+            textNode('MyName', '我', FONT.sub + 2, C.ink, {
+                pos: [COL_R - 40, 62], size: [200, 36], hAlign: 0, bold: true, overflow: 1,
+            }),
+            textNode('MyScore', '0', FONT.display, C.success, {
+                pos: [COL_R, 8], size: [240, 56], bold: true,
+            }),
+
+            // ---- 状态行：回合指示（左）+ 倒计时（右）----
+            textNode('TurnLabel', '对局开始', FONT.sub + 2, C.warn, {
+                pos: [LEFT + 190, -64], size: [400, 40], hAlign: 0, bold: true,
             }),
             textNode('TimerLabel', '30s', FONT.sub, C.inkFaint, {
-                pos: [240, -58], size: [180, 38], hAlign: 2,
+                pos: [DESIGN_W / 2 - GUTTER - 60, -64], size: [160, 40], hAlign: 2,
+            }),
+
+            // ---- 寻机头专用：已找到机头数（其他游戏运行时置空格隐藏）----
+            // ⚠️ 初值必须是**真实占位文案**：空串会被 validate-scenes.js 判为
+            //    「不可见」而校验失败（它正是为了拦住「Label 是空的所以看不见」）。
+            textNode('HeadsLabel', '已找到机头 0 / 5', FONT.sub, C.inkSoft, {
+                pos: [0, -104], size: [CONTENT_W, 36],
             }),
         ],
     });
@@ -485,8 +526,10 @@ function gameTree() {
     });
 
     // ---- 表情面板（默认隐藏，脚本按需显示）----
+    // y 取 -424：上方与棋盘底边(-358)留 18px，下方与操作栏顶边(-472)留 0px
+    // （HUD 加高到 248 后重新核过，见本函数头部注释）
     const emotePanel = cardNode('EmotePanel', CONTENT_W, 96, {
-        pos: [0, -420], active: false,
+        pos: [0, -424], active: false,
         children: [
             textNode('EmoteList', '👍    😭  😡    👏', 36, C.ink, { pos: [0, 0], size: [CONTENT_W - 40, 60] }),
         ],

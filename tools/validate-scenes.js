@@ -298,6 +298,47 @@ for (const f of ['Loading', 'Lobby', 'Room', 'Game']) {
         chk(lastUI && lastUI._name === 'Overlay', 'Overlay 是最后一个 UI_2D 子节点（浮层在最上层），实际 ' + (lastUI ? lastUI._name : 'null'));
     }
 
+    // ---------- B2. Game 场景 HUD 契约 + 纵向不重叠 ----------
+    //
+    // 为什么要专门断言这两件事：
+    //   1. GameScene 按**路径字符串**绑定 HUD 节点，改 ui-trees.js 时改名/挪位
+    //      不会报错，只会静默失效（Node 找不到 → 该段 UI 永不更新）。
+    //   2. 各区块是绝对定位的，改一处高度就可能压到别处（HUD 从 220 加高到 248
+    //      时就差点压到棋盘）。这里把「纵向依次不重叠」变成可校验的约束。
+    if (f === 'Game') {
+        const HUD_NODES = [
+            'Hud/OppName', 'Hud/OppScore', 'Hud/MyName', 'Hud/MyScore',
+            'Hud/TurnLabel', 'Hud/TimerLabel', 'Hud/HeadsLabel',
+            'Hud/OppTurnMark', 'Hud/MyTurnMark',
+        ];
+        const idxOf = new Map();
+        nodes.forEach((n, i) => { if (!idxOf.has(n._name)) idxOf.set(n._name, i); });
+        const missing = HUD_NODES.filter((p) => !idxOf.has(p.split('/').pop()));
+        chk(missing.length === 0,
+            'Game HUD 路径契约完整（GameScene 按路径绑定）' + (missing.length ? ' → 缺: ' + missing.join(', ') : ''));
+
+        // 取顶层区块的 y 中心与高度，验证纵向依次不重叠
+        const blockOf = (name) => {
+            const n = nodes.find((x) => x._name === name);
+            if (!n) return null;
+            const ut = n._components.map((r) => s[r.__id__]).find((x) => x.__type__ === 'cc.UITransform');
+            if (!ut) return null;
+            return { name, y: n._lpos.y, h: ut._contentSize.height };
+        };
+        const blocks = ['Hud', 'BoardArea', 'EmotePanel', 'ActionBar']
+            .map(blockOf)
+            .filter(Boolean)
+            .sort((a, b) => (b.y - b.h / 2) - (a.y - a.h / 2)); // 自上而下
+        for (let i = 0; i + 1 < blocks.length; i++) {
+            const upper = blocks[i];
+            const lower = blocks[i + 1];
+            const upperBottom = upper.y - upper.h / 2;
+            const lowerTop = lower.y + lower.h / 2;
+            chk(upperBottom >= lowerTop,
+                `${upper.name} 与 ${lower.name} 纵向不重叠（间隙 ${Math.round(upperBottom - lowerTop)}px）`);
+        }
+    }
+
     // ---------- C. 设计系统合规 ----------
     const offTokenFill = [];
     for (const o of fills) {

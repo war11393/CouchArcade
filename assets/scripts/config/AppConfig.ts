@@ -47,7 +47,7 @@ export class AppConfig {
      * 用于 Loading 页展示与版本更新提示。发版时改这里
      * （微信小游戏自身的版本号由平台管理，两者不必一致，但建议同步）。
      */
-    public static readonly APP_VERSION = '0.1.0';
+    public static readonly APP_VERSION = '0.1.1';
 
     /** 设计分辨率：竖屏主流基准 720 × 1280。 */
     public static readonly DESIGN_WIDTH = 720;
@@ -154,11 +154,14 @@ export class AppConfig {
     /**
      * 弹窗定位诊断（临时开关）。
      *
-     * true 时，模式选择弹窗会把运行时真实状态（父节点/尺寸/缩放/透明/兄弟序号）
-     * 直接画在屏幕上，用于定位「弹窗不显示」这类只能靠眼看的问题。
-     * 定位完请改回 false —— 它只是排查工具，不是功能。
+     * true 时，模式选择弹窗会把运行时真实状态（父节点/尺寸/缩放/透明/兄弟序号/
+     * 节点 layer 与相机可见性）直接画在屏幕上，用于定位「弹窗不显示」这类
+     * 只能靠眼看的问题。定位完请改回 false —— 它只是排查工具，不是功能。
+     *
+     * 历史：这个面板两次都精准定位了真因（第 4 轮 Overlay 缺 UITransform、
+     * 第 6 轮运行时节点在 DEFAULT 层），需要再查「看得见/点得到」类问题时先打开它。
      */
-    public static SHOW_DIALOG_DEBUG = true;
+    public static SHOW_DIALOG_DEBUG = false;
 
     /** 是否启用「开发者跳过」：AI 练习模式直接进入，无需等待。 */
     public static readonly DEV_SKIP_AI_WAIT = false;

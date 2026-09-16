@@ -9,7 +9,7 @@
  * - 第二阶段：切换为云函数生成 + 加密存储，客户端始终只按格查询结果，杜绝篡改。
  */
 
-import { AiLevel } from '../../config/AppConfig';
+import { AiLevel, AppConfig } from '../../config/AppConfig';
 import { GameId } from '../../config/GameList';
 import { INetSyncService, NetMessage } from '../../core/services/IServices';
 import { Cmd, PhFlipResultPayload } from '../../core/protocol/Protocol';
@@ -157,6 +157,7 @@ export class PlaneHuntAuthority implements IMockAuthority {
                 row: rev.row,
                 col: rev.col,
                 cell: rev.cell,
+                byPlayerId: rev.byPlayerId,
                 scored: rev.cell === CELL_HEAD,
                 extraTurn: false,
                 headsFound: this._rules.headsFound,
@@ -205,6 +206,15 @@ export class PlaneHuntGame implements IGame {
     private _finished = false;
     private _result: GameResult | null = null;
     private _startTime = 0;
+    /**
+     * 权威下发的「当前该谁行动」。
+     *
+     * 客户端本地 _rules 是独立实例，其回合状态不会随对局推进
+     * （客户端只提交翻格请求、接收结果，不自行改棋局）。
+     * 因此回合判定必须用权威下发值，否则 isMyTurn() 恒为 false，
+     * 表现为「点击棋盘没有任何反应」。
+     */
+    private _serverTurnId = '';
 
     constructor(ctx: GameContext) {
         this._ctx = ctx;
@@ -227,6 +237,8 @@ export class PlaneHuntGame implements IGame {
         const second = first === myPlayerId ? opponent.playerId : myPlayerId;
         // 本地规则实例仅用于渲染（客户端不知道布局，翻格结果由权威下发）
         this._rules = new PlaneHuntRules(first, second, seed);
+        // 初始回合 = 先手方（与权威构造时的 currentPlayerId 一致）
+        this._serverTurnId = first;
 
         if (this._board) {
             this._board.setup(myPlayerId, first);
@@ -298,7 +310,12 @@ export class PlaneHuntGame implements IGame {
         if (!this._rules || this._finished) {
             return false;
         }
-        return this._rules.currentPlayerId === this._ctx.myPlayerId;
+        // 优先用「权威下发的回合」判断。
+        // 本地 _rules 是独立实例（客户端拿不到布局，也不该改棋局状态），
+        // 它的 currentPlayerId 不会随对局推进 —— 直接读它会导致
+        // 我方回合恒为 false（症状：点了棋盘没有任何反应）。
+        const who = this._serverTurnId || this._rules.currentPlayerId;
+        return who === this._ctx.myPlayerId;
     }
 
     // ==================== 玩家操作 ====================
@@ -349,26 +366,45 @@ export class PlaneHuntGame implements IGame {
         if (!this._rules) {
             return;
         }
-        // 幂等：已揭示的格子跳过
+        // 幂等：已揭示的格子跳过（重连全量补偿时会重复下发）
         if (this._rules.isRevealed(p.row, p.col)) {
             return;
         }
-        // 本地记录（用于 UI 与回合指示；布局信息不参与，因为规则层不知道内容）
-        this._rules = this._rules; // 保留引用语义，实际状态以权威下发为准
+
+        // 记录权威下发的回合 —— 客户端不自行推演棋局，
+        // 回合判定唯一依据就是这里（见 _serverTurnId 的说明）。
+        const prevTurn = this._serverTurnId;
+        this._serverTurnId = p.nextPlayerId;
+        // 注意：不要往本地 rules 里塞 nextPlayerId —— 改本地规则等于客户端自行
+        // 推演棋局，与「布局/判定全在权威方」的防篡改设计相悖。
+        // 「哪些格已翻开」由 PlaneHuntBoard 自维护（见 revealCell / isRevealedInBoard）。
 
         if (this._board) {
             this._board.showThinking(false);
-            this._board.revealCell(p.row, p.col, p.cell, p.scored, p.score);
+            // 归属按 byPlayerId 判定（信封里的 playerId 是权威代发的发送者，
+            // 对 AI 出手来说那是 AI 自己，不能用它判断「是不是我翻的」）
+            const byMe = p.byPlayerId === this._ctx.myPlayerId;
+            this._board.revealCell(p.row, p.col, p.cell, byMe, p.scored, p.score);
             this._board.setTurn(p.nextPlayerId === this._ctx.myPlayerId, p.headsFound, this._headTotal());
         }
 
-        // 机头奖励：连续翻格时给 UI 提示
-        if (p.extraTurn && this._board) {
-            this._board.showBonusTip();
+        // 翻中机头：给一次视觉反馈（**不再**奖励连翻，见 PlaneHuntRules 说明）。
+        // 反馈只看 scored，不看 extraTurn —— 后者在当前规则下恒为 false。
+        if (p.scored && this._board) {
+            this._board.showScoreTip();
         }
 
+        // ⚠️ 必须用权威回合 + 未结束来重算输入开关。
+        //    只在这里设置输入状态，且条件含 nextPlayerId —— 曾经漏了这步，
+        //    导致回合切回我方时棋盘仍是「不可点」的。
+        const myTurnNow = !this._finished && p.nextPlayerId === this._ctx.myPlayerId;
         if (this._board) {
-            this._board.setInputEnabled(!this._finished && p.nextPlayerId === this._ctx.myPlayerId);
+            this._board.setInputEnabled(myTurnNow);
+        }
+        if (prevTurn !== this._serverTurnId && AppConfig.LOG_VERBOSE) {
+            console.log(
+                `[PlaneHuntGame] 回合切换：${prevTurn || '(空)'} → ${this._serverTurnId || '(空)'}，我方回合=${myTurnNow}`,
+            );
         }
     }
 

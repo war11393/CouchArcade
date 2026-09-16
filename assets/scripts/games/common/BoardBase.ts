@@ -190,6 +190,91 @@ export abstract class BoardBase {
         }
     }
 
+    // ==================== 棋盘外框 / 线条（两盘共用，保证观感一致） ====================
+
+    /**
+     * 棋盘的**统一线宽**（网格线 / 外框共用同一个基准，避免两盘粗细不一）。
+     *
+     * 为什么要有这个函数：线条粗细原先在各棋盘里各写一份
+     * （五子棋 5%、寻机头 3%），结果两款游戏的棋盘观感明显不一致。
+     * 现在统一从这里取，改一处两盘同步。
+     */
+    protected gridLineWidth(): number {
+        const cell = this._layout.cellSize;
+        // 以格子尺寸为基准，夹在 [1, 3]：太细看不见，太粗会糊住格子
+        return Math.max(1, Math.min(3, Math.floor(cell * 0.06)));
+    }
+
+    /** 外框线宽 = 网格线的 3 倍（至少 4px），用于强化棋盘「存在感」。 */
+    protected borderLineWidth(): number {
+        return Math.max(4, this.gridLineWidth() * 3);
+    }
+
+    /** 棋盘底板外扩的内边距（外框与网格之间留出的边距）。 */
+    protected boardPad(): number {
+        const cell = this._layout.cellSize;
+        return Math.max(0, Math.min(Math.max(6, Math.floor(cell * 0.3)), Math.floor(this.innerMargin())));
+    }
+
+    /**
+     * 绘制棋盘底板 + **加粗外框**。
+     *
+     * 外框单独用更粗的线画在网格外侧，是「让棋盘看起来是一块板」的关键：
+     * 只有细网格线时，棋盘会「浮」在页面上、边界糊掉。
+     *
+     * @param bgColor 底板填充色
+     * @param lineColor 网格线与外框统一的颜色
+     */
+    protected drawBoardFrame(g: Graphics, bgColor: Color, lineColor: Color): void {
+        const { boardWidth, boardHeight } = this._layout;
+        if (boardWidth <= 0 || boardHeight <= 0) {
+            return;
+        }
+        const pad = this.boardPad();
+
+        // 1) 底板（含外扩边距）
+        this.fillRect(
+            g,
+            -boardWidth / 2 - pad,
+            -boardHeight / 2 - pad,
+            boardWidth + pad * 2,
+            boardHeight + pad * 2,
+            bgColor,
+        );
+
+        // 2) 加粗外框：贴着底板外沿画，线心内缩半个线宽避免被裁掉
+        const bw = this.borderLineWidth();
+        const half = bw / 2;
+        g.lineWidth = bw;
+        g.strokeColor = lineColor;
+        g.rect(
+            -boardWidth / 2 - pad + half,
+            -boardHeight / 2 - pad + half,
+            boardWidth + pad * 2 - bw,
+            boardHeight + pad * 2 - bw,
+        );
+        g.stroke();
+    }
+
+    /** 统一线宽的网格线绘制（竖线 + 横线），颜色与外框一致。 */
+    protected drawGridLines(g: Graphics, lineColor: Color, spacing: number, offset: number): void {
+        const { boardWidth, boardHeight } = this._layout;
+        g.lineWidth = this.gridLineWidth();
+        g.strokeColor = lineColor;
+        const half = boardWidth / 2;
+        const halfH = boardHeight / 2;
+        for (let i = 0; i <= spacing; i++) {
+            const x = -half + i * offset;
+            g.moveTo(x, -halfH);
+            g.lineTo(x, halfH);
+            g.stroke();
+            const y = -halfH + i * offset;
+            g.moveTo(-half, y);
+            g.lineTo(half, y);
+            g.stroke();
+        }
+    }
+
     /**
      * 棋盘底板的可用内边距上限。
      *

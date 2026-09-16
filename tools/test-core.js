@@ -381,7 +381,7 @@ const rulesMod = compileTs('assets/scripts/games/planehunt/PlaneHuntRules.ts', {
 });
 const { PlaneHuntRules } = rulesMod;
 
-// 18) 翻中机头 → 得分 + 额外一次
+// 18) 翻中机头 → 得分，但**回合照常交给对手**（不奖励连翻）
 {
     const rules = new PlaneHuntRules('A', 'B', 12345);
     // 直接查权威机头位置来测试「翻中」路径
@@ -392,7 +392,9 @@ const { PlaneHuntRules } = rulesMod;
     const res = rules.applyFlip(h0.row, h0.col, 'A');
     check('翻中机头计分', res && res.scored === true, JSON.stringify(res));
     check('翻中机头得 1 分', rules.scoreOf('A') === 1, 'score=' + rules.scoreOf('A'));
-    check('翻中机头奖励额外一次（回合不变）', res && res.extraTurn === true && rules.currentPlayerId === 'A', 'cur=' + rules.currentPlayerId);
+    check('翻中机头后回合交给对手（不连翻）',
+        res && res.extraTurn === false && rules.currentPlayerId === 'B',
+        'extraTurn=' + (res && res.extraTurn) + ' cur=' + rules.currentPlayerId);
 }
 
 // 19) 翻中机身 → 不得分 + 回合切换
@@ -454,19 +456,25 @@ const { PlaneHuntRules } = rulesMod;
 {
     const rules = new PlaneHuntRules('A', 'B', 4242);
     const heads = rules.authoritativeHeads();
-    // A 翻 3 个机头（连续奖励），B 翻 2 个机头
-    let i = 0;
-    for (; i < 3; i++) {
-        rules.applyFlip(heads[i].row, heads[i].col, 'A');
-    }
-    for (; i < 5; i++) {
-        // 若因奖励机制仍是 A 的回合，则强制按当前回合玩家翻
+    // 规则：每次翻格后都换手（不奖励连翻），因此按「当前回合是谁」去翻。
+    // 让 A 拿到 3 个机头、B 拿到 2 个，验证「机头多者胜」。
+    for (let i = 0; i < 5; i++) {
         const cur = rules.currentPlayerId;
-        rules.applyFlip(heads[i].row, heads[i].col, cur);
+        // 用权威布局的机头坐标逐个翻开（谁翻由当前回合决定）
+        const target = heads[i];
+        rules.applyFlip(target.row, target.col, cur);
     }
     check('机头翻完对局结束', rules.finished === true, 'finished=' + rules.finished);
-    check('得分高者获胜', rules.winnerId !== '' || rules.isDraw, 'winner=' + rules.winnerId + ' draw=' + rules.isDraw);
     check('机头计数为 5', rules.headsFound === 5, 'heads=' + rules.headsFound);
+    check('得分高者获胜（或平局）',
+        rules.winnerId !== '' || rules.isDraw,
+        'winner=' + rules.winnerId + ' draw=' + rules.isDraw + ' A=' + rules.scoreOf('A') + ' B=' + rules.scoreOf('B'));
+
+    // 5 个机头、交替翻 → 先手 A 拿 3 个、B 拿 2 个 → A 胜
+    check('交替翻格时先手拿到 3 个机头', rules.scoreOf('A') === 3,
+        'A=' + rules.scoreOf('A'));
+    check('后手拿到 2 个机头', rules.scoreOf('B') === 2, 'B=' + rules.scoreOf('B'));
+    check('先手 A 获胜', rules.winnerId === 'A', 'winner=' + rules.winnerId);
 }
 
 // =====================================================================
@@ -538,6 +546,49 @@ const { PlaneHuntAi } = aiMod;
         if (rules.finished) break;
     }
     check('AI 决策均为未翻开格', bad === 0, 'bad=' + bad);
+}
+
+// =====================================================================
+console.log('\n=== 回归：寻机头回合交接与实参顺序 ===');
+// =====================================================================
+//
+// 背景（真实 bug，症状「点击棋盘没有任何反应」）：
+//   GameScene 曾把 myPlayerId 同时当 firstPlayerId 和 secondPlayerId 传给
+//   PlaneHuntAuthority，导致 opponentOf() 永远返回空字符串，
+//   下发结果的 nextPlayerId 为空 → 客户端 isMyTurn() 恒为 false → 点击被拒。
+// 这里锁住「两名玩家必须不同 + 回合能交接」这一契约。
+{
+    // 1) 正确构造：回合能正常交接
+    const r = new PlaneHuntRules('p1', 'p2', 4242);
+    const res1 = r.applyFlip(0, 0, 'p1');
+    check('翻格后 nextPlayerId 非空', !!res1 && res1.nextPlayerId !== '',
+        'nextPlayerId=' + (res1 ? JSON.stringify(res1.nextPlayerId) : 'null'));
+    check('回合从 p1 交接给 p2', !!res1 && res1.nextPlayerId === 'p2',
+        'nextPlayerId=' + (res1 ? res1.nextPlayerId : 'null'));
+    check('翻格结果带 byPlayerId 归属', !!res1 && res1.byPlayerId === 'p1',
+        'byPlayerId=' + (res1 ? res1.byPlayerId : 'null'));
+
+    // 2) 错误构造（两名玩家相同）→ 必须能检出：opponentOf 返回空
+    const bad = new PlaneHuntRules('same', 'same', 4242);
+    check('两名玩家相同时 opponentOf 返回空（即构造错误可被检出）',
+        bad.opponentOf('same') === '', 'opponentOf=' + JSON.stringify(bad.opponentOf('same')));
+    const badRes = bad.applyFlip(0, 0, 'same');
+    check('两名玩家相同时 nextPlayerId 为空（正是曾经的 bug 现场）',
+        !!badRes && badRes.nextPlayerId === '',
+        'nextPlayerId=' + (badRes ? JSON.stringify(badRes.nextPlayerId) : 'null'));
+
+    // 3) 翻中机头 → 得分，但回合**照常换手**（当前规则不奖励连翻）
+    const r3 = new PlaneHuntRules('p1', 'p2', 777);
+    const heads = r3.authoritativeHeads();
+    const h = heads[0];
+    const res3 = r3.applyFlip(h.row, h.col, 'p1');
+    check('翻中机头得 1 分', !!res3 && res3.score === 1, 'score=' + (res3 ? res3.score : 'null'));
+    check('翻中机头不奖励连翻（extraTurn=false）', !!res3 && res3.extraTurn === false,
+        'extraTurn=' + (res3 ? res3.extraTurn : 'null'));
+    check('翻中机头后回合交给 p2', !!res3 && res3.nextPlayerId === 'p2',
+        'nextPlayerId=' + (res3 ? res3.nextPlayerId : 'null'));
+    check('归属仍是翻格者 p1（与回合是两件事）', !!res3 && res3.byPlayerId === 'p1',
+        'byPlayerId=' + (res3 ? res3.byPlayerId : 'null'));
 }
 
 // =====================================================================

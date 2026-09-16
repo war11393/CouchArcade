@@ -115,9 +115,16 @@ export interface PhFlipResultPayload {
     col: number;
     /** 0=空 1=机身 2=机头（服务器返回该格真实内容） */
     cell: 0 | 1 | 2;
+    /**
+     * 翻开这一格的玩家 openid。
+     *
+     * 用于客户端做得分/翻格数归属 —— 不能靠「翻完之后轮到谁」推断，
+     * 因为翻中机头会奖励连翻（回合不变），归属与回合是两件事。
+     */
+    byPlayerId: string;
     /** 该玩家是否得分（翻中机头） */
     scored: boolean;
-    /** 是否获得奖励连翻 */
+    /** 是否获得奖励连翻（当前规则恒为 false —— 翻到机头也换手，见 PlaneHuntRules 说明） */
     extraTurn: boolean;
     /** 当前累计已翻出的机头数 */
     headsFound: number;
