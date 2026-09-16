@@ -17,6 +17,7 @@ import {
     Component,
     director,
     Label,
+    Layers,
     Node,
     UIOpacity,
     UITransform,
@@ -130,7 +131,10 @@ export class UIManager {
     }
 
     private _load(scene: SceneName): void {
-        console.log(`[UIManager] 切换场景 → ${scene}`);
+        const cur = director.getScene();
+        console.log(
+            `[UIManager] 切换场景 → ${scene}（当前场景=${cur ? cur.name : 'null'}）`,
+        );
         if (scene === SCENES.LOADING) {
             // Loading 场景重新加载时用重新启动，避免状态残留
             director.loadScene(scene);
@@ -164,7 +168,17 @@ export class UIManager {
      */
     private _overlayRoot(canvas: Node): Node {
         const named = canvas.getChildByName('Overlay');
-        return named ?? canvas;
+        const root = named ?? canvas;
+        // 兜底：浮层容器必须是 UI_2D 层。若它是 DEFAULT 层（例如被编辑器误改、
+        // 或将来换成预制体），挂在它下面的所有运行时节点的渲染与点击都会静默失效。
+        // 这里不做递归改子节点（子节点由各自的 newUINode 保证），只修容器自身。
+        if (root.layer !== Layers.Enum.UI_2D) {
+            console.warn(
+                `[UIManager] 浮层容器 ${root.name} 层级异常(${root.layer})，已强制改为 UI_2D`,
+            );
+            root.layer = Layers.Enum.UI_2D;
+        }
+        return root;
     }
 
     /**
@@ -275,6 +289,7 @@ export class UIManager {
                 472,
                 88,
                 () => {
+                    console.log(`[UIManager] 弹窗选项被点击：${c.label}`);
                     maskNode.destroy();
                     c.onPick();
                 },
@@ -318,6 +333,21 @@ export class UIManager {
      */
     private _showDialogDebug(root: Node, mask: Node, panel: Node, size: { width: number; height: number }, choiceCount: number): void {
         const hasBlockInput = !!mask.getComponent(BlockInputEvents);
+        const cam = this._findCamera();
+        const camVis = cam ? cam.visibility : -1;
+        // 相机可见性掩码检查：DEFAULT 层(1<<30)不在 UI_2D|UI_3D 内，
+        // 若这里报「不可见」，说明有节点没走 UIFactory 的 newUINode。
+        const ui2d = Layers.Enum.UI_2D;
+        const layers = [
+            ['root', root],
+            ['mask', mask],
+            ['panel', panel],
+        ] as Array<[string, Node]>;
+        const layerLines = layers.map(([n, node]) => {
+            const ok = (node.layer & camVis) !== 0;
+            const isUI2D = node.layer === ui2d;
+            return `${n}.layer=${node.layer}${isUI2D ? '(UI_2D✓)' : '(非UI_2D✗)'} 相机可见=${ok ? '是✓' : '否✗'}`;
+        });
         const lines = [
             `maskNode: valid=${mask.isValid} active=${mask.activeInHierarchy}`,
             `mask size=${mask.getComponent(UITransform)?.width}x${mask.getComponent(UITransform)?.height} scale=${mask.scale.x}`,
@@ -327,6 +357,8 @@ export class UIManager {
             `panel pos=(${panel.position.x},${panel.position.y}) active=${panel.activeInHierarchy}`,
             `visibleSize=${size.width}x${size.height} choices=${choiceCount}`,
             `root=${root.name} rootChildren=${root.children.length}`,
+            `相机可见性掩码=${camVis} (UI_2D|UI_3D=${Layers.Enum.UI_2D | Layers.Enum.UI_3D})`,
+            ...layerLines,
         ];
         const node = createRect('DialogDebug', size.width, lines.length * 34 + 20, THEME.toastBg);
         root.addChild(node);
@@ -342,6 +374,21 @@ export class UIManager {
             if (lt) lt.setContentSize(size.width - 20, 30);
         });
         console.log('[UIManager] 弹窗诊断已显示（AppConfig.SHOW_DIALOG_DEBUG=true）');
+        console.log('[UIManager] 弹窗层级诊断:\n  ' + lines.slice(-4).join('\n  '));
+    }
+
+    /** 找当前场景的 UI 相机（用于诊断相机可见性）。 */
+    private _findCamera(): Camera | null {
+        const scene = director.getScene();
+        if (!scene) return null;
+        const stack: Node[] = [...scene.children];
+        while (stack.length > 0) {
+            const n = stack.shift()!;
+            const c = n.getComponent(Camera);
+            if (c) return c;
+            stack.push(...n.children);
+        }
+        return null;
     }
 
     // ==================== 结算弹窗 ====================

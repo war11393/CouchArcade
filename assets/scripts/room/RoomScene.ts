@@ -31,7 +31,6 @@
  */
 
 import { _decorator, Color, Component, Label, Node } from 'cc';
-import { AppConfig } from '../config/AppConfig';
 import { requireGameMeta } from '../config/GameList';
 import { RoomState, RoomStatus, SeatInfo } from '../core/services/IServices';
 import { services, ensureServices } from '../core/ServiceLocator';
@@ -57,6 +56,7 @@ export class RoomScene extends Component {
     private _entered = false;
 
     protected async onLoad(): Promise<void> {
+        console.log('[RoomScene] onLoad 开始');
         ensureServices();
         this._params = uiManager.consumeRoomParams();
         if (!this._params) {
@@ -64,9 +64,13 @@ export class RoomScene extends Component {
             uiManager.gotoLobby();
             return;
         }
+        console.log(
+            `[RoomScene] 收到进入参数：gameId=${this._params.gameId} mode=${this._params.mode} joinRoomId=${this._params.joinRoomId ?? '(无)'}`,
+        );
 
         this._bindNodes();
         await this._initRoom();
+        console.log('[RoomScene] onLoad 完成（房间已初始化）');
     }
 
     protected onDestroy(): void {
@@ -161,6 +165,10 @@ export class RoomScene extends Component {
 
         this._isOwner = state.ownerId === myId;
 
+        console.log(
+            `[RoomScene] 房间状态更新：roomId=${state.roomId} status=${state.status} 房主=${this._isOwner} isPractice=${state.isPractice} seeds=${JSON.stringify(state.seats.map((s) => `${s.nickname}${s.isAI ? '[AI]' : ''}${s.ready ? '(已准备)' : '(未准备)'}`))}`,
+        );
+
         switch (state.status) {
             case RoomStatus.WAITING:
                 this._setStatus('等待玩家入座并准备…');
@@ -186,6 +194,7 @@ export class RoomScene extends Component {
 
         // 全员就绪 + 房主 → 直接开局（保持原行为：READY 后自动进入对局）
         if (this._isOwner && (state.status === RoomStatus.READY || state.isPractice)) {
+            console.log('[RoomScene] 满足自动开局条件（房主 + READY/练习房）→ 触发 _onStart');
             void this._onStart();
         }
 
@@ -246,11 +255,9 @@ export class RoomScene extends Component {
             (state.status === RoomStatus.READY || state.isPractice) &&
             state.status !== RoomStatus.PLAYING;
 
-        if (AppConfig.LOG_VERBOSE) {
-            console.log(
-                `[RoomScene] 按钮刷新：房主=${this._isOwner} 可开局=${canStart} 状态=${state.status}`,
-            );
-        }
+        console.log(
+            `[RoomScene] 按钮刷新：房主=${this._isOwner} 可开局=${canStart} 状态=${state.status} 我已准备=${this._myReady}`,
+        );
     }
 
     /** 房间级消息处理。 */
@@ -277,12 +284,19 @@ export class RoomScene extends Component {
 
     /** 房主开局。 */
     private async _onStart(): Promise<void> {
-        if (this._entered) return;
+        if (this._entered) {
+            console.log('[RoomScene] _onStart 跳过（已进入过对局）');
+            return;
+        }
+        console.log('[RoomScene] _onStart：调用 startRoom…');
         try {
             await services.room.startRoom();
+            console.log('[RoomScene] startRoom 成功，拉取房间快照…');
             const state = await services.room.getRoomState();
             if (state) {
                 this._enterGame(state);
+            } else {
+                console.warn('[RoomScene] getRoomState 返回 null，无法进入对局');
             }
         } catch (err) {
             console.error('[RoomScene] 开局失败:', err);
@@ -300,7 +314,7 @@ export class RoomScene extends Component {
             mode: this._params!.mode,
             room: state,
         };
-        console.log('[RoomScene] 进入对局场景');
+        console.log(`[RoomScene] 进入对局场景（gameId=${state.gameId} mode=${params.mode}）`);
         uiManager.gotoGame(params);
     }
 

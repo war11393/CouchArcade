@@ -24,6 +24,7 @@ import {
 } from 'cc';
 import { AppConfig } from '../../config/AppConfig';
 import { BOARD, THEME, hexToColor } from '../../config/UITheme';
+import { newUINode } from '../../core/UIFactory';
 import { BoardBase } from '../common/BoardBase';
 import { GomokuRules, Stone } from './GomokuRules';
 
@@ -161,18 +162,20 @@ export class GomokuBoard extends Component {
         }
 
         // 棋盘图形层
-        this._boardNode = new Node('BoardGfx');
+        // ⚠️ 一律用 newUINode（内部设 UI_2D 层）：new Node() 默认 DEFAULT 层，
+        //    相机看不见、点击也没有命中测试 —— 症状是「点棋盘没反应」。
+        this._boardNode = newUINode('BoardGfx');
         this.node.addChild(this._boardNode);
         this._boardNode.addComponent(UITransform);
         this._boardNode.addComponent(Graphics);
 
         // 棋子层（独立节点，保证绘制顺序在网格之上）
-        this._stoneLayer = new Node('StoneLayer');
+        this._stoneLayer = newUINode('StoneLayer');
         this.node.addChild(this._stoneLayer);
         this._stoneLayer.addComponent(UITransform);
 
         // 思考提示
-        this._thinkingNode = new Node('Thinking');
+        this._thinkingNode = newUINode('Thinking');
         this.node.addChild(this._thinkingNode);
         this._thinkingNode.addComponent(UITransform);
         this._thinkingLabel = this._thinkingNode.addComponent(Label);
@@ -295,7 +298,7 @@ export class GomokuBoard extends Component {
         const layout = this._renderer.getLayout();
         const pos = this._renderer.cellToLocal(row, col);
 
-        const node = new Node(`stone_${row}_${col}`);
+        const node = newUINode(`stone_${row}_${col}`);
         this._stoneLayer.addChild(node);
         node.setPosition(pos);
 
@@ -331,7 +334,7 @@ export class GomokuBoard extends Component {
             this._lastMark = null;
         }
         const layout = this._renderer.getLayout();
-        const node = new Node('lastMark');
+        const node = newUINode('lastMark');
         this._stoneLayer.addChild(node);
         node.setPosition(this._renderer.cellToLocal(row, col));
         node.addComponent(UITransform).setContentSize(layout.cellSize, layout.cellSize);
@@ -348,7 +351,7 @@ export class GomokuBoard extends Component {
             return;
         }
         const layout = this._renderer.getLayout();
-        const node = new Node('winLine');
+        const node = newUINode('winLine');
         this._stoneLayer.addChild(node);
         node.addComponent(UITransform);
         const g = node.addComponent(Graphics);

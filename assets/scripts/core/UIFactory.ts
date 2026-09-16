@@ -18,6 +18,7 @@ import {
     Color,
     Graphics,
     Label,
+    Layers,
     Layout,
     Node,
     Sprite,
@@ -33,6 +34,38 @@ import { UiFill } from './UiFill';
 
 // 主题与工具转发（历史代码从本文件 import THEME/hexToColor，保持兼容；唯一实现在 UITheme.ts）
 export { THEME, hexToColor };
+
+/**
+ * 创建一个「能被 UI 相机看见」的节点。
+ *
+ * ⚠️ 本项目第二个「全都对但看不见」的坑，症状同样是「点了按钮没反应」：
+ *   `new Node()` 的 `layer` 默认是 `Layers.Enum.DEFAULT`（1<<30），
+ *   而场景里的 Canvas 相机 `visibility` 只有 UI_2D | UI_3D（= 50331648），
+ *   **DEFAULT 层不在可见性掩码内** —— 于是运行时创建的节点：
+ *     · 渲染不出来（屏幕上什么都没有，用户以为「点击无效」）；
+ *     · 也不参与 UI 事件命中测试（点了真的没有任何回调）。
+ *   静态 .scene 节点没事，是因为 tools/scene-builder.js 的 makeNode 写死了 UI_2D。
+ *   只挂在父节点的 layer 上不可靠（addChild 不会继承 layer），所以每个新建节点
+ *   都要显式设置。所有 createXxx 工厂一律走这里，避免再漏。
+ */
+export function newUINode(name: string): Node {
+    const node = new Node(name);
+    node.layer = Layers.Enum.UI_2D;
+    return node;
+}
+
+/**
+ * 把节点（含整棵子树）的 layer 校正为 UI_2D。
+ *
+ * 兜底用途：某些 API（如 instantiate 预制体、第三方组件内部的 addChild）
+ * 会带出 DEFAULT 层的子节点，渲染与点击都会静默失效。
+ */
+export function forceUILayer(node: Node): void {
+    node.layer = Layers.Enum.UI_2D;
+    for (const c of node.children) {
+        forceUILayer(c);
+    }
+}
 
 /** 扁平按钮样式（见 docs/UI_DESIGN.md 的按钮规范）。 */
 export interface ButtonStyle {
@@ -67,7 +100,7 @@ export function createRect(
     radius = 0,
     border?: { color: Color; width?: number },
 ): Node {
-    const node = new Node(name);
+    const node = newUINode(name);
     const t = node.addComponent(UITransform);
     t.setContentSize(width, height);
     t.setAnchorPoint(0.5, 0.5);
@@ -120,7 +153,7 @@ export function createLabel(
     color: Color = THEME.text,
     width = 0,
 ): Node {
-    const node = new Node(name);
+    const node = newUINode(name);
     const t = node.addComponent(UITransform);
     t.setAnchorPoint(0.5, 0.5);
     if (width > 0) {
@@ -191,7 +224,7 @@ export function createVerticalList(
     width: number,
     height: number,
 ): Node {
-    const node = new Node(name);
+    const node = newUINode(name);
     const t = node.addComponent(UITransform);
     t.setContentSize(width, height);
     t.setAnchorPoint(0.5, 0.5);
@@ -210,7 +243,7 @@ export function createVerticalList(
  * 创建圆形头像占位（无美术资源时用「首字 + 底色圆」表示）。
  */
 export function createAvatar(name: string, nickname: string, size = 96, color = THEME.primary): Node {
-    const node = new Node(name);
+    const node = newUINode(name);
     const t = node.addComponent(UITransform);
     t.setContentSize(size, size);
     t.setAnchorPoint(0.5, 0.5);

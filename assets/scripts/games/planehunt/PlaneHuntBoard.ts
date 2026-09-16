@@ -24,6 +24,7 @@ import {
 } from 'cc';
 import { AppConfig } from '../../config/AppConfig';
 import { BOARD, hexToColor } from '../../config/UITheme';
+import { newUINode } from '../../core/UIFactory';
 import { BoardBase } from '../common/BoardBase';
 import { CELL_BODY, CELL_HEAD } from './PlaneHuntLayout';
 
@@ -175,12 +176,14 @@ export class PlaneHuntBoard extends Component {
         }
         ut.setAnchorPoint(0.5, 0.5);
 
-        this._gfxNode = new Node('GridGfx');
+        // ⚠️ 一律用 newUINode（内部设 UI_2D 层）：new Node() 默认 DEFAULT 层，
+        //    相机看不见、点击也没有命中测试 —— 症状是「点棋盘没反应」。
+        this._gfxNode = newUINode('GridGfx');
         this.node.addChild(this._gfxNode);
         this._gfxNode.addComponent(UITransform);
         this._gfxNode.addComponent(Graphics);
 
-        this._markLayer = new Node('MarkLayer');
+        this._markLayer = newUINode('MarkLayer');
         this.node.addChild(this._markLayer);
         this._markLayer.addComponent(UITransform);
 
@@ -214,7 +217,7 @@ export class PlaneHuntBoard extends Component {
         // 翻牌动画：缩放 + 标记
         const pos = this._renderer.cellToLocal(row, col);
         const layout = this._renderer.getLayout();
-        const mark = new Node(`mark_${row}_${col}`);
+        const mark = newUINode(`mark_${row}_${col}`);
         this._markLayer?.addChild(mark);
         mark.setPosition(pos);
         mark.addComponent(UITransform).setContentSize(layout.cellSize, layout.cellSize);
@@ -257,7 +260,7 @@ export class PlaneHuntBoard extends Component {
 
     /** 翻中机头奖励提示。 */
     public showBonusTip(): void {
-        const node = new Node('bonusTip');
+        const node = newUINode('bonusTip');
         this.node.addChild(node);
         node.addComponent(UITransform);
         const label = node.addComponent(Label);

@@ -130,12 +130,14 @@ export class LobbyScene extends Component {
             choices: [
                 {
                     label: '创建房间（联机对战）',
-                    onPick: () =>
+                    onPick: () => {
+                        console.log('[LobbyScene] 选择「创建房间」→ gotoRoom(pvp)');
                         uiManager.gotoRoom({
                             gameId: meta.id,
                             mode: 'pvp',
                             aiLevel: AppConfig.DEFAULT_AI_LEVEL,
-                        }),
+                        });
+                    },
                 },
                 {
                     label: '加入房间',
@@ -143,12 +145,14 @@ export class LobbyScene extends Component {
                 },
                 {
                     label: 'AI 练习（无需等待）',
-                    onPick: () =>
+                    onPick: () => {
+                        console.log('[LobbyScene] 选择「AI 练习」→ gotoRoom(ai)');
                         uiManager.gotoRoom({
                             gameId: meta.id,
                             mode: 'ai',
                             aiLevel: AppConfig.DEFAULT_AI_LEVEL,
-                        }),
+                        });
+                    },
                 },
             ],
         });

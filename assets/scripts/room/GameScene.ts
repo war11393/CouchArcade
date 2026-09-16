@@ -9,7 +9,7 @@
  * 双模式：pvp / ai 共用本场景，仅上下文不同。
  */
 
-import { _decorator, Component, Label, Node, UITransform, Vec3, view } from 'cc';
+import { _decorator, Component, Label, Layers, Node, UITransform, Vec3, view } from 'cc';
 import { AiLevel, AppConfig } from '../config/AppConfig';
 import { GameId, requireGameMeta } from '../config/GameList';
 import { RoomState, SeatInfo } from '../core/services/IServices';
@@ -20,6 +20,7 @@ import {
     THEME,
     bindClick,
     findNode,
+    forceUILayer,
     labelAt,
     setLabelText,
 } from '../core/UIFactory';
@@ -208,6 +209,7 @@ export class GameScene extends Component {
         if (gameId === GameId.GOMOKU) {
             const gomoku = game as GomokuGame;
             const boardNode = new Node('GomokuBoard');
+            boardNode.layer = Layers.Enum.UI_2D;
             this._boardNode!.addChild(boardNode);
             boardNode.addComponent(UITransform).setContentSize(
                 this._boardNode!.getComponent(UITransform)!.width,
@@ -216,6 +218,9 @@ export class GameScene extends Component {
             const board = boardNode.addComponent(GomokuBoard);
             board.onCellClick = (r, c) => gomoku.onPlayerClick(r, c);
             gomoku.attachView(board);
+            // 棋盘内部还有若干 new Node()（棋子/网格/落子标记），统一校正层级，
+            // 否则这些节点是 DEFAULT 层 —— 相机看不见、点击也没有命中测试。
+            forceUILayer(boardNode);
 
             // AI 练习模式：装配本地权威裁判
             if (ctx.mode === 'ai') {
@@ -232,6 +237,7 @@ export class GameScene extends Component {
         } else if (gameId === GameId.PLANE_HUNT) {
             const ph = game as PlaneHuntGame;
             const boardNode = new Node('PlaneHuntBoard');
+            boardNode.layer = Layers.Enum.UI_2D;
             this._boardNode!.addChild(boardNode);
             boardNode.addComponent(UITransform).setContentSize(
                 this._boardNode!.getComponent(UITransform)!.width,
@@ -240,6 +246,8 @@ export class GameScene extends Component {
             const board = boardNode.addComponent(PlaneHuntBoard);
             board.onCellClick = (r, c) => ph.onPlayerClick(r, c);
             ph.attachView(board);
+            // 同上：棋盘内部新建的节点也必须校正为 UI_2D 层
+            forceUILayer(boardNode);
 
             if (ctx.mode === 'ai') {
                 const auth = new PlaneHuntAuthority(

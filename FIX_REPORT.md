@@ -382,6 +382,96 @@ Remove-Item -Recurse -Force library, temp
 
 ---
 
+## 第 6 轮：运行时 UI 节点全在 DEFAULT 层（点击「开始游戏」没反应 · 真因）
+
+**日期**：2026-09-16
+
+### 症状
+
+第 4 轮修好 `Overlay` 的 `UITransform` 之后，**症状完全没变**：
+
+```
+[LobbyScene] 选择游戏：寻机头                             ← 点击链路正常
+[UIManager] 模式选择弹窗已显示：寻机头（父节点=Overlay）   ← 节点创建成功
+[UIManager] 弹窗诊断已显示（AppConfig.SHOW_DIALOG_DEBUG=true）
+```
+
+控制台正常，屏幕上依然**一个像素都没变**，连铺满全屏的深色诊断面板也看不见。
+
+### 根因：`new Node()` 的默认 layer 是 DEFAULT，不在相机可见性掩码内
+
+| 常量 | 值 | 二进制 |
+| :--- | :--- | :--- |
+| `Layers.Enum.DEFAULT`（`new Node()` 默认） | 1073741824 | `1<<30` |
+| `Layers.Enum.UI_2D`（静态场景节点用的） | 33554432 | `1<<25` |
+| 相机 `visibility`（四个场景实测） | 50331648 | `1<<25 \| 1<<24` |
+
+`50331648 & 1073741824 === 0` —— **DEFAULT 层的节点对 UI 相机完全不可见**，
+而且**不参与 UI 事件命中测试**。所以运行时创建的一切（Toast / 模式弹窗 /
+结算弹窗 / 诊断面板 / 棋盘棋子）既不显示、也点不到。
+
+静态 `.scene` 节点之所以正常，是因为 `tools/scene-builder.js` 的 `makeNode()`
+写死了 `layer = LAYER_UI_2D`；而 `assets/scripts/core/UIFactory.ts` 里的
+`createRect/createLabel/createButton` 全都用裸 `new Node()`，于是**集体踩坑**。
+`addChild` **不会**让子节点继承父节点 layer，所以只改父节点没用。
+
+### 与第 4 轮的对比（同一类坑的第二次）
+
+两轮的**症状、误导性、验证方式完全一致**，这也是它值得单独立一轮的原因：
+
+| | 第 4 轮 | 第 6 轮 |
+| :--- | :--- | :--- |
+| 缺失的东西 | 父节点 `UITransform` | 节点 `layer = UI_2D` |
+| 常规断言（存在/尺寸/alpha/sibling） | 全通过 | 全通过 |
+| 日志 | 全部正常 | 全部正常 |
+| 唯一能发现的方式 | 真机看一眼 / 查引擎渲染条件 | 同左 |
+
+**教训（比第 4 轮更具体）**：Cocos 3.x 里一个节点要「可见且可点」，
+除了 `UITransform` 和 Renderer，还必须满足 **`(node.layer & camera.visibility) !== 0`**。
+排查「节点建好了但屏幕没反应」时，这三条要**一起**查，而不是只查事件谁吞了。
+
+### 修复
+
+| 位置 | 改动 |
+| :--- | :--- |
+| `UIFactory.ts` | 新增并导出 `newUINode(name)`（内部 `layer = Layers.Enum.UI_2D`），**所有** `createRect / createLabel / createVerticalList / createAvatar` 改走它 |
+| `UIFactory.ts` | 新增 `forceUILayer(node)`：递归校正整棵子树，用于预制体/第三方 `addChild` 兜底 |
+| `UIManager.ts` | `_overlayRoot()` 增加断言式兜底：容器非 UI_2D 层时告警并强改，防止浮层容器被误改 |
+| `UIManager.ts` | 诊断面板新增 **`layer=` 与 `相机可见=是/否`** 两行 —— 这一项本来就能一眼定位本轮 bug |
+| `GomokuBoard.ts` / `PlaneHuntBoard.ts` | 棋盘内部 10 处 `new Node()` 全部改 `newUINode()`（棋子/网格/标记/连赢线是**对局中动态创建**的，只靠 GameScene 的 `forceUILayer` 兜不住） |
+| `GameScene.ts` | 棋盘根节点显式设 layer，并在装配后 `forceUILayer(boardNode)` 兜底 |
+| `tools/validate-scenes.js` | 新增 **D 节「运行时节点层级护栏」**：静态扫描 `assets/scripts/**/*.ts`，任何 `new Node()` 若未在 3 行内设置 `layer` 或调用 `forceUILayer` 即**校验失败** |
+
+> 关键：护栏是**回归防护**，不是文档。第 4 轮的教训是「错误的断言会把 bug 保护起来」，
+> 所以这次加的是能**证伪**的规则（没有它，下一轮又会有人直接 `new Node()`）。
+
+### 配套：全链路日志（本轮按需求补）
+
+| 阶段 | 日志前缀 |
+| :--- | :--- |
+| 点游戏卡片 | `[LobbyScene] 选择游戏：xxx` |
+| 弹窗选项点击 | `[UIManager] 弹窗选项被点击：xxx` |
+| 选创建/AI | `[LobbyScene] 选择「创建房间」→ gotoRoom(pvp)` |
+| 场景切换 | `[UIManager] 切换场景 → Room（当前场景=Lobby）` |
+| 进入房间 | `[RoomScene] onLoad 开始` / `收到进入参数：gameId/mode/joinRoomId` |
+| 房间状态 | `[RoomScene] 房间状态更新：roomId/status/房主/isPractice/座位准备情况` |
+| 开局判定 | `[RoomScene] 满足自动开局条件 → 触发 _onStart` → `_onStart：调用 startRoom…` → `startRoom 成功` → `进入对局场景（gameId/mode）` |
+
+### 本轮验证
+
+| 检查 | 命令 | 结果 |
+| :--- | :--- | :--- |
+| 场景结构 + **层级护栏** | `node tools/validate-scenes.js` | ✅ `ALL_SCENE_VALIDATIONS_PASSED` |
+| 严格类型校验 | `cmd /c typecheck.cmd` | ✅ `TYPECHECK_EXIT=0` |
+| 纯逻辑单测 | `node tools/test-core.js` | ✅ `40 通过, 0 失败` |
+| 护栏自身有效性 | 故意保留 board 里的 `new Node()` | ✅ 正确报 `FAILURES: 1`（能证伪） |
+
+**仍需真人确认**（我无法渲染）：预览点「开始游戏」→ 应看到半透明蒙层 +
+居中模式选择面板 + 深色诊断面板（其中 `mask.layer=33554432(UI_2D✓) 相机可见=是✓`）。
+确认无误后把 `AppConfig.SHOW_DIALOG_DEBUG` 改回 `false`。
+
+---
+
 ## 配置概览
 
 | 参数 | 值 |

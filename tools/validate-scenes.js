@@ -343,6 +343,60 @@ console.log('=== 与官方参考场景对齐 ===');
 chk(ref.some((o) => o.__type__ === 'cc.Node'), '参考场景可读');
 console.log('');
 
+// =====================================================================
+// D. 运行时节点层级护栏（源码静态扫描）
+// =====================================================================
+//
+// 背景（本项目第二个「全都对但看不见」的坑，症状 = 点了按钮没反应）：
+//   `new Node()` 默认 layer 是 Layers.Enum.DEFAULT(1<<30)，而 Canvas 相机的
+//   visibility 只有 UI_2D|UI_3D。DEFAULT 层节点既不渲染、也不参与事件命中测试，
+//   但所有断言（节点存在、尺寸>0、日志正常）都会通过 —— 极难排查。
+//   修复方式：运行时 UI 一律走 UIFactory 的 newUINode()（内部设 UI_2D）。
+//   这里做静态扫描，防止将来又有人直接 new Node() 建 UI。
+console.log('=== 运行时节点层级护栏 ===');
+(function checkRuntimeLayers() {
+    const SCRIPTS = path.join(__dirname, '..', 'assets', 'scripts');
+    const files = [];
+    (function walk(dir) {
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+            const p = path.join(dir, e.name);
+            if (e.isDirectory()) walk(p);
+            else if (e.name.endsWith('.ts')) files.push(p);
+        }
+    })(SCRIPTS);
+
+    // 白名单：UIFactory.newUINode 是唯一的合法出口；
+    // GameScene 里的 boardNode 已显式设置 layer 并紧跟 forceUILayer 兜底。
+    const ALLOW = ['core\\UIFactory.ts', 'core/UIFactory.ts'];
+
+    const offenders = [];
+    for (const f of files) {
+        const rel = path.relative(SCRIPTS, f);
+        const src = fs.readFileSync(f, 'utf8');
+        const lines = src.split(/\r?\n/);
+        lines.forEach((line, i) => {
+            if (!/new\s+Node\s*\(/.test(line)) return;
+            if (/^\s*(\*|\/\/)/.test(line)) return;              // 注释
+            if (ALLOW.some((a) => rel.endsWith(a))) return;      // 工厂内部
+            // 同一行或随后 2 行内设置了 layer 也算合规
+            const window = lines.slice(i, i + 3).join('\n');
+            if (/\.layer\s*=|forceUILayer\s*\(/.test(window)) return;
+            offenders.push(`${rel}:${i + 1}`);
+        });
+    }
+    chk(
+        offenders.length === 0,
+        '运行时 new Node() 均设置了 UI_2D 层（或走 UIFactory）' +
+            (offenders.length ? ' → 违规: ' + offenders.join(', ') : ''),
+    );
+
+    // 工厂必须存在且把 layer 设为 UI_2D
+    const factory = fs.readFileSync(path.join(SCRIPTS, 'core', 'UIFactory.ts'), 'utf8');
+    chk(/Layers\.Enum\.UI_2D/.test(factory), 'UIFactory 设置了 Layers.Enum.UI_2D');
+    chk(/function\s+forceUILayer/.test(factory), 'UIFactory 导出 forceUILayer 兜底');
+    console.log('');
+})();
+
 if (fail === 0) {
     console.log('ALL_SCENE_VALIDATIONS_PASSED');
 } else {
