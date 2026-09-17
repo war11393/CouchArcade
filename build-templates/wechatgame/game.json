@@ -8,11 +8,9 @@
     "downloadFile": 10000
   },
   "subpackages": [],
-  "openDataContext": "",
   "permission": {},
   "resizable": false,
   "navigateToMiniProgramAppIdList": [],
-  "workers": "",
   "requiredBackgroundModes": [],
   "plugins": {},
   "preloadRule": {},
