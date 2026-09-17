@@ -20,9 +20,10 @@
 | TypeScript | 严格模式 | `strict: true` | `tsconfig.check.json`（校验用）<br>**注意**：见第 3 节说明 | ⚠️ 见 3 |
 | 安全区 | `SafeAreaAdapter` 从 `IPlatformService.getSystemInfo()` 读取 | 已实现 | `assets/scripts/core/SafeAreaAdapter.ts`<br>Mock：`core/services/mock/MockPlatformService.ts`<br>Wx 桩：`core/services/wx/WxPlatformService.ts` | ✅ |
 | 首包预算 | ≤ 4MB | 预算常量已设 | `AppConfig.FIRST_PACKAGE_BUDGET_BYTES = 4 * 1024 * 1024`<br>`build-templates/wechatgame/project.config.json` → `setting.minified: true` | ✅ |
-| 构建平台 | 微信小游戏 | `wechatgame` | `settings/v2/packages/builder.json` → `common.platform` | ✅（仅预留，未构建） |
-| appid 占位 | 占位值 | `"TODO"` | `settings/v2/packages/builder.json` → `wechatgame.appid`<br>`build-templates/wechatgame/project.config.json` → `appid`<br>`AppConfig.WX_APPID = 'TODO'` | ✅ |
-| 云环境占位 | 占位值 | `"TODO"` | `AppConfig.CLOUD_ENV = 'TODO'` | ✅ |
+| 构建平台 | 微信小游戏 | `wechatgame` | `settings/v2/packages/builder.json` → `common.platform` | ✅（第二阶段已开始构建） |
+| appid | 真实值 | `wxd5cc731e7273d122` | `settings/v2/packages/builder.json` → `wechatgame.appid` / `packages.wechatgame.appid`<br>`build-templates/wechatgame/project.config.json` → `appid`<br>`AppConfig.WX_APPID` | ✅（四处已统一） |
+| 云环境占位 | 占位值 | `"TODO"` | `AppConfig.CLOUD_ENV = 'TODO'`（待 B2 建环境后填真实环境 ID） | ⏳ 待填 |
+| 游戏名称 | `沙发派对` | 与微信工具一致 | `builder.json` → `common.name`<br>`build-templates/wechatgame/project.config.json` → `projectname` | ✅ |
 | 远程服务器地址 | 占位 | `https://TODO.example.com/remote` | `AppConfig.REMOTE_SERVER`<br>`builder.json` → `wechatgame.remoteServerAddress` | ✅ |
 | 分包配置 | 占位 | `"subpackages": []` | `builder.json` → `wechatgame.subpackages`<br>`build-templates/wechatgame/game.json` → `subpackages` | ✅（空数组占位） |
 

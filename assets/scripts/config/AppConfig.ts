@@ -24,8 +24,8 @@ export class AppConfig {
 
     // ==================== 微信侧占位配置（仅预留，不做任何调用） ====================
 
-    /** 微信小游戏 appid 占位。第二阶段替换为真实 appid。 */
-    public static readonly WX_APPID = 'TODO';
+    /** 微信小游戏 appid。第二阶段已填入真实值（与 build-templates / builder.json 保持一致）。 */
+    public static readonly WX_APPID = 'wxd5cc731e7273d122';
 
     /** 云开发环境 ID 占位。第二阶段替换为 wx.cloud.init({ env }) 的真实环境 ID。 */
     public static readonly CLOUD_ENV = 'TODO';

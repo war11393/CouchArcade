@@ -6,7 +6,7 @@
     "mainBundleCompressionType": "merge_all_json",
     "mainBundleIsRemote": false,
     "platform": "wechatgame",
-    "name": "wechat_game",
+    "name": "沙发派对",
     "startScene": "db://assets/scenes/Loading.scene",
     "scenes": [
       {
@@ -40,7 +40,7 @@
     }
   },
   "wechatgame": {
-    "appid": "TODO",
+    "appid": "wxd5cc731e7273d122",
     "orientation": "portrait",
     "subpackages": [],
     "remoteServerAddress": "https://TODO.example.com/remote",
@@ -59,7 +59,7 @@
   },
   "packages": {
     "wechatgame": {
-      "appid": "TODO",
+      "appid": "wxd5cc731e7273d122",
       "orientation": "portrait",
       "subpackages": [],
       "remoteServerAddress": "https://TODO.example.com/remote"

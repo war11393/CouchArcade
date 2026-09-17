@@ -1,5 +1,5 @@
 {
-  "description": "微信小游戏分包配置占位（本阶段仅预留，不构建）",
+  "description": "微信小游戏配置（沙发派对）。构建时由 Cocos 从 build-templates/wechatgame/ 合并覆盖到 build/wechatgame/。",
   "packOptions": {
     "ignore": [
       {
@@ -40,7 +40,7 @@
   },
   "compileType": "game",
   "libVersion": "3.0.0",
-  "appid": "TODO",
-  "projectname": "wechat_game",
+  "appid": "wxd5cc731e7273d122",
+  "projectname": "沙发派对",
   "condition": {}
 }

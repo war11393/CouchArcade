@@ -229,8 +229,14 @@
 3. 修改 `assets/scripts/config/AppConfig.ts`：
    ```ts
    public static readonly CLOUD_ENV = '你的环境ID';   // 原为 'TODO'
-   public static readonly WX_APPID = '你的AppID';      // 原为 'TODO'
+   public static readonly WX_APPID = 'wxd5cc731e7273d122';  // ✅ 已填真实 AppID
    ```
+   > appid 另需与 `settings/v2/packages/builder.json`（`wechatgame.appid` +
+   > `packages.wechatgame.appid`）及 `build-templates/wechatgame/project.config.json`
+   > 保持一致，四处已统一为 `wxd5cc731e7273d122`。
+   > **注意**：微信开发者工具会改写 `build/wechatgame/project.config.json` 的 appid／
+   > 生成 `project.private.config.json`，但 `build/` 每次构建会被清空 —— 所以**只改
+   > `build-templates/` 与 `settings/`**，不要在 `build/` 里做不可再生的改动。
 4. 重新构建（步骤 1）
 
 ### 步骤 4：创建数据库集合
