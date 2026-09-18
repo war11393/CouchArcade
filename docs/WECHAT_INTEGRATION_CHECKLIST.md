@@ -319,17 +319,50 @@ public static USE_MOCK = false;   // ← 唯一需要改的开关
 
 ## 3. 阶段边界确认
 
-本阶段（第一阶段）**已做**：
+### 第一阶段（已完成）
 
 - ✅ 全部平台能力经 `core/services/` 抽象层接口调用，业务层**零 `wx.*` 直接调用**
-- ✅ Mock 实现可在编辑器预览中全流程跑通（`USE_MOCK = true`）
+- ✅ Mock 实现可在编辑器预览中全流程跑通
 - ✅ 每个接口都有 Wx 桩 + `TODO(wechat-phase2)` 注释
 - ✅ 本清单覆盖全部 15 项联通点（接口 → wx API → 桩位置 → 步骤 → 验证）
 - ✅ 云函数源码、集合设计、消息协议文档齐备
 
-本阶段**未做**（按铁律要求，留待第二阶段）：
+### 第二阶段（代码侧已完成，待微信侧联调）
 
-- ❌ 未执行任何微信构建/部署/上传命令
-- ❌ 未修改编辑器版本、未重新初始化项目
-- ❌ 未调用任何 `wx.*` API（仅存在于注释中）
-- ❌ 构建配置仅做参数预留（appid/远程地址/分包均为占位）
+> **进度：7 个 Wx 服务已全部实现，`TODO(wechat-phase2)` 计数 42 → 0。
+> 剩余工作是「微信开发者工具侧的配置与真机验证」，见 `docs/WECHAT_PHASE2_CHECKLIST.md`。**
+
+已做：
+
+- ✅ `AppConfig` 填入真实 `WX_APPID` / `CLOUD_ENV`，`USE_MOCK` 已置 `false`
+- ✅ 7 个 Wx 服务（`WxPlatform / WxAuth / WxStorage / WxShare / WxRoom / WxNetSync / WxCloud`）
+      全部实现，共 42 处 TODO 清零
+- ✅ 新增 `config/CloudErrors.ts`：错误码表与 `CloudError` 类型，
+      与 `cloudfunctions/common/index.js` 的 `ERR` 严格对齐
+- ✅ 新增 `.typecheck/wx-shim.d.ts`：`wx` 全局 API 最小类型声明
+      （本仓库无 minigame-api-typings，缺此文件无法通过严格模式校验）
+- ✅ 补上清单 §1.3 标注「最容易漏」的**热启动分支**：
+      `IPlatformService.subscribeShow()`（wx.onShow）+ LoadingScene `_hookShowListener()`
+- ✅ 补上 §1.12 要求的**断线重连触发**：
+      AppBootstrap `_hookReconnect()`（onShow + 网络恢复），经抽象层不直调 wx.*
+- ✅ 边界铁律保持：全部真实 `wx.*` 调用仅存在于 `core/services/wx/` 五个文件
+
+未做（需人工在微信侧操作，无法由代码完成）：
+
+- ❌ 微信开发者工具中的云环境开通、集合创建、索引配置
+- ❌ 9 个云函数的上传部署
+- ❌ 真机联调与体验版上传
+
+---
+
+## 4. 实现与原桩设计的差异说明（重要）
+
+| 项 | 原桩注释 | 实际实现 | 原因 |
+| :--- | :--- | :--- | :--- |
+| 登录换取 openid | `wx.login` 拿 code → `code2Session` | 云函数内 `cloud.getWXContext().OPENID` | 后者是云开发标准做法，OPENID 由微信服务端注入不可伪造；两者互斥，云函数源码用的是后者 |
+| `updateProfile` | 调 `wx.getUserProfile` | 不调用，透传调用方收集的昵称/头像 | `getUserProfile` 自 2022-10-25 起对新注册小程序返回匿名数据 |
+| `getSystemInfo` | 仅 `wx.getSystemInfoSync` | 优先 `getWindowInfo`+`getDeviceInfo`，回落 | 官方已将 `getSystemInfoSync` 标记为不推荐 |
+| `checkUpdate` | 桩内占位日志 | 接 `wx.getUpdateManager` | 补齐清单 §1.13 |
+| 分享成功判定 | 依赖 `shareAppMessage` success | 语义标注为「面板已拉起」+ `onShareMessageToFriend` | success 不代表分享成功，据此发奖会被刷 |
+| 热启动 | 未提及具体接入点 | `subscribeShow()` + LoadingScene 注册 | 清单 §1.3 明确要求，且为最常见线上问题 |
+| 断线重连触发 | 未提及 | AppBootstrap 注册 onShow + 网络恢复 | 清单 §1.12 明确要求 |

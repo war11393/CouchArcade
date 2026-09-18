@@ -17,12 +17,15 @@ export class AppConfig {
 
     /**
      * true  = 使用 Mock 实现（编辑器预览/浏览器可全流程可玩，零 wx 依赖）
-     * false = 使用 Wx 实现（第二阶段真机联调）
-     * 设置位置：本文件。第二阶段在微信开发者工具构建产物中修改此项。
+     * false = 使用 Wx 实现（微信真机联调）
+     *
+     * ⚠️ 第二阶段已切换到 false。
+     * 若需回到编辑器内调试（不依赖微信环境），把此处改回 true 并重新构建/预览即可，
+     * 业务层零改动 —— 这正是本开关存在的意义。
      */
-    public static USE_MOCK = true;
+    public static USE_MOCK = false;
 
-    // ==================== 微信侧占位配置（仅预留，不做任何调用） ====================
+    // ==================== 微信侧配置 ====================
 
     /** 微信小游戏 appid。第二阶段已填入真实值（与 build-templates / builder.json 保持一致）。 */
     public static readonly WX_APPID = 'wxd5cc731e7273d122';

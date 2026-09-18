@@ -200,6 +200,27 @@ export class WxPlatformService implements IPlatformService {
     }
 
     /**
+     * 订阅「网络恢复」回调。
+     *
+     * 时机：断网后重新联网。用于触发对局断线重连。
+     */
+    public subscribeNetworkRestore(cb: () => void): () => void {
+        try {
+            wx.onNetworkStatusChange((res) => {
+                if (res.isConnected) {
+                    cb();
+                }
+            });
+        } catch (err) {
+            console.warn('[WxPlatform] onNetworkStatusChange 注册失败:', err);
+            return () => undefined;
+        }
+        // 微信未提供 offNetworkStatusChange 的稳定版本，这里返回空取消函数；
+        // 该监听生命周期与应用一致，不随场景销毁，故无需取消。
+        return () => undefined;
+    }
+
+    /**
      * 检查版本更新。
      *
      * 微信约束：

@@ -198,6 +198,27 @@ export interface IPlatformService {
      * 可选实现：未实现时 Loading 页只打日志跳过，不阻断启动流程。
      */
     checkUpdate?(handlers: UpdateCheckHandlers): void;
+    /**
+     * 订阅「热启动」回调（App 从后台切回前台 / 点击新的分享卡片）。
+     *
+     * **必需实现的补充路径**：`getLaunchOptions()` 只能拿到**冷启动**参数，
+     * App 已在后台时从另一张分享卡片进入不会更新它 ——
+     * 这是分享直达房间最常见的线上问题（用户以为点了卡片，却停在大厅）。
+     *
+     * 可选实现：未实现时业务层只依赖冷启动参数。
+     *
+     * @returns 取消订阅函数
+     */
+    subscribeShow?(cb: (options: LaunchOptions) => void): () => void;
+    /**
+     * 订阅「网络恢复」回调（断网后重新联网）。
+     *
+     * 用于触发对局断线重连（配合 INetSyncService.reconnect 做全量对账）。
+     * 可选实现：未实现时只依赖 subscribeShow 的切前台时机。
+     *
+     * @returns 取消订阅函数
+     */
+    subscribeNetworkRestore?(cb: () => void): () => void;
 }
 
 /**

@@ -110,4 +110,50 @@ export class MockPlatformService implements IPlatformService {
             console.log('[MockPlatform] checkUpdate() 模拟检查更新：无新版本');
         }
     }
+
+    /**
+     * 订阅「热启动」回调（Mock 实现）。
+     *
+     * 编辑器里没有真实的 onShow 生命周期，因此这里用 window 的
+     * focus 事件近似模拟「切回前台」，并重新解析 URL query ——
+     * 便于在浏览器里手动验证「后台时从另一张卡片进入」的分支：
+     * 改动地址栏的 ?roomId=xxx 后点击页面（触发 focus）即可。
+     */
+    public subscribeShow(cb: (options: LaunchOptions) => void): () => void {
+        if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') {
+            return () => undefined;
+        }
+        const handler = (): void => {
+            const opts = this.getLaunchOptions();
+            if (AppConfig.LOG_VERBOSE) {
+                console.log('[MockPlatform] 模拟热启动（focus），query=', opts.query);
+            }
+            cb(opts);
+        };
+        window.addEventListener('focus', handler);
+        return () => {
+            window.removeEventListener('focus', handler);
+        };
+    }
+
+    /**
+     * 订阅「网络恢复」回调（Mock 实现）。
+     *
+     * Mock 阶段用浏览器 online 事件近似模拟，便于在编辑器里验证重连分支。
+     */
+    public subscribeNetworkRestore(cb: () => void): () => void {
+        if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') {
+            return () => undefined;
+        }
+        const handler = (): void => {
+            if (AppConfig.LOG_VERBOSE) {
+                console.log('[MockPlatform] 模拟网络恢复（online）');
+            }
+            cb();
+        };
+        window.addEventListener('online', handler);
+        return () => {
+            window.removeEventListener('online', handler);
+        };
+    }
 }
