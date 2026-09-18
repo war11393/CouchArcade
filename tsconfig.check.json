@@ -23,6 +23,7 @@
   },
   "include": [
     ".typecheck/cc-shim.d.ts",
+    ".typecheck/wx-shim.d.ts",
     "assets/scripts/**/*.ts"
   ]
 }

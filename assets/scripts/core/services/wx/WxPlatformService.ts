@@ -1,69 +1,246 @@
 /**
- * Wx 平台服务桩 —— 第二阶段联通实现。
+ * Wx 平台服务 —— 第二阶段真实实现。
  *
- * 本文件所有方法体均为空实现 + TODO(wechat-phase2) 标记。
- * 方法签名与 MockPlatformService 完全一致，保证 AppConfig.USE_MOCK=false 时
- * 可无缝替换。
+ * 目标 API：wx.getSystemInfoSync / wx.getWindowInfo / wx.getDeviceInfo /
+ *          wx.vibrateShort / wx.vibrateLong / wx.getLaunchOptionsSync /
+ *          wx.onShow / wx.getUpdateManager
  *
- * 联通步骤见 docs/WECHAT_INTEGRATION_CHECKLIST.md。
+ * 契约提醒：getSystemInfo() 与 getLaunchOptions() 在 IPlatformService 中
+ * 被定义为**同步**返回（SafeAreaAdapter / LoadingScene 早期即需取值）。
+ * 因此这里必须用 *Sync 系列接口，不要改成 Promise。
  */
 
-import { LaunchOptions, IPlatformService, SystemInfo } from '../IServices';
+import { AppConfig } from '../../../config/AppConfig';
+import { IPlatformService, LaunchOptions, SystemInfo, UpdateCheckHandlers } from '../IServices';
 
 export class WxPlatformService implements IPlatformService {
+    /**
+     * 获取系统信息（同步）。
+     *
+     * 实现策略：优先用官方推荐的 getWindowInfo + getDeviceInfo 组合
+     * （getSystemInfoSync 已被标记为不推荐但小游戏端仍可用），
+     * 二者任一缺失时回落到 getSystemInfoSync —— 兼容低版本基础库。
+     */
     public getSystemInfo(): SystemInfo {
-        // TODO(wechat-phase2): 接入 wx.getSystemInfoSync()
-        //   const info = wx.getSystemInfoSync();
-        //   safeArea 字段说明：
-        //     info.safeArea = { top, left, right, bottom, width, height }
-        //     本方法需将其转换为 SystemInfo.safeArea 结构后返回。
-        //   注意：wx 返回的 safeArea.top 是「状态栏+刘海」的避让高度，
-        //   SafeAreaAdapter 会据此计算上下留白。
-        //   验证方法：真机（刘海屏 iPhone）预览，顶部标题不被状态栏遮挡。
-        throw new Error('[WxPlatformService] getSystemInfo() 未实现（第二阶段联通）');
-    }
+        const base = wx.getSystemInfoSync();
 
-    public vibrateShort(): void {
-        // TODO(wechat-phase2): 接入 wx.vibrateShort({ type: 'light' })
-        //   验证方法：真机点击落子/翻格，有轻微振动反馈。
-    }
+        // ---- 窗口信息（含 safeArea，官方新接口） ----
+        let screenWidth = base.screenWidth;
+        let screenHeight = base.screenHeight;
+        let pixelRatio = base.pixelRatio;
+        let statusBarHeight = base.statusBarHeight ?? 0;
+        let rawSafeArea = base.safeArea;
 
-    public vibrateLong(): void {
-        // TODO(wechat-phase2): 接入 wx.vibrateLong()
-        //   验证方法：真机对局结算弹窗弹出时有长振动。
-    }
+        try {
+            if (typeof wx.getWindowInfo === 'function') {
+                const win = wx.getWindowInfo();
+                if (win) {
+                    screenWidth = win.screenWidth ?? screenWidth;
+                    screenHeight = win.screenHeight ?? screenHeight;
+                    pixelRatio = win.pixelRatio ?? pixelRatio;
+                    if (typeof win.statusBarHeight === 'number') {
+                        statusBarHeight = win.statusBarHeight;
+                    }
+                    if (win.safeArea) {
+                        rawSafeArea = win.safeArea;
+                    }
+                }
+            }
+        } catch (err) {
+            console.warn('[WxPlatform] getWindowInfo 失败，回落 getSystemInfoSync:', err);
+        }
 
-    public getLaunchOptions(): LaunchOptions {
-        // TODO(wechat-phase2): 接入 wx.getLaunchOptionsSync()
-        //   需读取 query.roomId 以支持「分享卡片直进房间」。
-        //   验证方法：从好友分享的卡片进入，应直接落在指定房间。
-        throw new Error('[WxPlatformService] getLaunchOptions() 未实现（第二阶段联通）');
+        // ---- 平台标识 ----
+        let platform = base.platform;
+        try {
+            if (typeof wx.getDeviceInfo === 'function') {
+                const dev = wx.getDeviceInfo();
+                if (dev && dev.platform) {
+                    platform = dev.platform;
+                }
+            }
+        } catch (err) {
+            console.warn('[WxPlatform] getDeviceInfo 失败，回落 getSystemInfoSync:', err);
+        }
+
+        return {
+            screenWidth,
+            screenHeight,
+            pixelRatio,
+            platform, // 'ios' | 'android' | 'devtools' | 'windows' | 'mac' ...
+            safeArea: this._normalizeSafeArea(rawSafeArea, screenWidth, screenHeight),
+            statusBarHeight,
+            SDKVersion: base.SDKVersion,
+            isMiniGame: true,
+        };
     }
 
     /**
-     * 检查版本更新（Loading 页调用）。
+     * 归一化安全区。
      *
-     * 联通步骤：
-     *   1. const um = wx.getUpdateManager();
-     *   2. um.onCheckForUpdate(res => res.hasUpdate && handlers.onHasUpdate?.());
-     *   3. um.onUpdateReady(() => handlers.onUpdateReady?.(() => um.applyUpdate()));
-     *   4. um.onUpdateFailed(() => handlers.onUpdateFailed?.());
-     *
-     * 注意：
-     *   · 小游戏**不支持强制更新**，applyUpdate 由用户在弹窗确认后触发；
-     *   · 首次上传的版本不会触发更新流程（属正常现象）；
-     *   · 需在启动早期注册，越早越能覆盖「热启动拿到新版本」的场景。
+     * 防御点：部分低版本基础库 safeArea 缺失，或返回全 0；
+     * 直接透传会让 SafeAreaAdapter 算出 0 留白（顶部被刘海遮挡）。
+     * 这里在数据不可信时回落到 AppConfig 的兜底值。
      */
-    public checkUpdate(handlers: {
-        onHasUpdate?: () => void;
-        onUpdateReady?: (apply: () => void) => void;
-        onUpdateFailed?: () => void;
-    }): void {
-        // TODO(wechat-phase2): 接入 wx.getUpdateManager()
-        //   const um = wx.getUpdateManager();
-        //   um.onCheckForUpdate((res) => { if (res.hasUpdate) handlers.onHasUpdate?.(); });
-        //   um.onUpdateReady(() => handlers.onUpdateReady?.(() => um.applyUpdate()));
-        //   um.onUpdateFailed(() => handlers.onUpdateFailed?.());
-        console.log('[WxPlatformService] checkUpdate() 未实现（第二阶段联通），跳过版本检查');
+    private _normalizeSafeArea(
+        raw: WxSystemInfo['safeArea'],
+        screenWidth: number,
+        screenHeight: number,
+    ): SystemInfo['safeArea'] {
+        const usable =
+            !!raw &&
+            Number.isFinite(raw.top) &&
+            Number.isFinite(raw.bottom) &&
+            Number.isFinite(raw.left) &&
+            Number.isFinite(raw.right) &&
+            Number.isFinite(raw.width) &&
+            Number.isFinite(raw.height) &&
+            raw.width > 0 &&
+            raw.height > 0;
+
+        if (usable && raw) {
+            return {
+                top: raw.top,
+                bottom: raw.bottom,
+                left: raw.left,
+                right: raw.right,
+                width: raw.width,
+                height: raw.height,
+            };
+        }
+
+        console.warn('[WxPlatform] safeArea 缺失或非法，使用 AppConfig 兜底值');
+        const top = AppConfig.SAFE_AREA_FALLBACK_TOP;
+        const bottom = AppConfig.SAFE_AREA_FALLBACK_BOTTOM;
+        return {
+            top,
+            bottom,
+            left: 0,
+            right: screenWidth,
+            width: screenWidth,
+            height: Math.max(0, screenHeight - top - bottom),
+        };
+    }
+
+    public vibrateShort(): void {
+        try {
+            // 注意：调用间隔 < 30ms 会被系统忽略（快速连点不保证每次都振）
+            wx.vibrateShort({
+                type: 'light',
+                fail: (e: unknown) => console.warn('[WxPlatform] vibrateShort 失败:', e),
+            });
+        } catch (err) {
+            // 振动是非关键反馈，失败仅告警
+            console.warn('[WxPlatform] vibrateShort 异常:', err);
+        }
+    }
+
+    public vibrateLong(): void {
+        try {
+            wx.vibrateLong({
+                fail: (e: unknown) => console.warn('[WxPlatform] vibrateLong 失败:', e),
+            });
+        } catch (err) {
+            console.warn('[WxPlatform] vibrateLong 异常:', err);
+        }
+    }
+
+    /**
+     * 获取启动参数（同步）。
+     *
+     * 注意：query 中的值**全部是字符串**（如 roomId 是 '123456' 而非数字），
+     * 调用方需按字符串处理。
+     *
+     * 重要：本接口只覆盖**冷启动**。App 已在后台时从分享卡片再次进入
+     * 不会更新这里的返回值 —— 该场景必须由调用方注册 wx.onShow 处理
+     * （见 subscribeShow）。
+     */
+    public getLaunchOptions(): LaunchOptions {
+        const raw = wx.getLaunchOptionsSync();
+        return {
+            scene: raw.scene,
+            query: raw.query ?? {},
+            shareTicket: raw.shareTicket,
+            referrerInfo: raw.referrerInfo,
+        };
+    }
+
+    /**
+     * 订阅「热启动」回调（从后台切回前台 / 点击新分享卡片）。
+     *
+     * 这是本项目最容易漏做的一环：wx.getLaunchOptionsSync 不会更新，
+     * 必须靠 onShow 才能拿到新的 query（如从另一张卡片进房）。
+     *
+     * @returns 取消订阅函数
+     */
+    public subscribeShow(cb: (options: LaunchOptions) => void): () => void {
+        const handler = (res: WxLaunchOptions): void => {
+            cb({
+                scene: res.scene,
+                query: res.query ?? {},
+                shareTicket: res.shareTicket,
+                referrerInfo: res.referrerInfo,
+            });
+        };
+        try {
+            wx.onShow(handler);
+        } catch (err) {
+            console.warn('[WxPlatform] onShow 注册失败:', err);
+            return () => undefined;
+        }
+        return () => {
+            try {
+                if (typeof wx.offShow === 'function') {
+                    wx.offShow(handler);
+                }
+            } catch (err) {
+                console.warn('[WxPlatform] offShow 失败:', err);
+            }
+        };
+    }
+
+    /**
+     * 检查版本更新。
+     *
+     * 微信约束：
+     *   · 小游戏**不支持强制更新**，applyUpdate 必须由用户在弹窗确认后触发；
+     *   · 首次上传的版本不会触发更新流程（属正常现象）；
+     *   · 需在启动早期注册，越早越能覆盖「热启动拿到新版本」的情况。
+     */
+    public checkUpdate(handlers: UpdateCheckHandlers): void {
+        if (typeof wx.getUpdateManager !== 'function') {
+            console.warn('[WxPlatform] 当前环境无 getUpdateManager，跳过版本检查');
+            return;
+        }
+
+        try {
+            const um = wx.getUpdateManager();
+
+            um.onCheckForUpdate((res) => {
+                console.log(`[WxPlatform] 版本检查完成 hasUpdate=${res.hasUpdate}`);
+                if (res.hasUpdate) {
+                    handlers.onHasUpdate?.();
+                }
+            });
+
+            um.onUpdateReady(() => {
+                console.log('[WxPlatform] 新版本已下载完成，等待用户确认重启');
+                // 把 apply 交给上层：由 UI 弹窗询问后再调用
+                handlers.onUpdateReady?.(() => {
+                    try {
+                        um.applyUpdate();
+                    } catch (err) {
+                        console.error('[WxPlatform] applyUpdate 失败:', err);
+                    }
+                });
+            });
+
+            um.onUpdateFailed(() => {
+                console.warn('[WxPlatform] 新版本下载失败，继续使用当前版本');
+                handlers.onUpdateFailed?.();
+            });
+        } catch (err) {
+            console.error('[WxPlatform] getUpdateManager 初始化失败:', err);
+        }
     }
 }

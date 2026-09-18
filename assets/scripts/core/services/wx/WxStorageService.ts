@@ -1,34 +1,57 @@
 /**
- * Wx 本地存储服务桩 —— 第二阶段联通实现。
+ * Wx 本地存储服务 —— 第二阶段真实实现。
  * 目标 API：wx.setStorageSync / wx.getStorageSync / wx.removeStorageSync / wx.clearStorageSync
+ *
+ * 核心坑（务必保留判空逻辑）：
+ *   wx.getStorageSync 读取**不存在的 key 返回空字符串 ''**，而不是 undefined。
+ *   若直接返回它，调用方拿到的 '' 会被当成「有效值」，
+ *   例如 `cached ?? defaultUser` 中的 ?? 不生效（'' 不是 nullish）→ 首启拿到空用户。
  */
 
 import { IStorageService } from '../IServices';
 
 export class WxStorageService implements IStorageService {
     public get<T>(key: string, defaultValue?: T): T | undefined {
-        // TODO(wechat-phase2): 接入 wx.getStorageSync(key)
-        //   const v = wx.getStorageSync(key);
-        //   return (v === '' || v === undefined || v === null) ? defaultValue : (v as T);
-        //   注意：wx.getStorageSync 读取不存在的 key 返回 ''（空字符串），不是 undefined，
-        //   必须显式判空，否则会把 '' 当成有效值。
-        //   验证方法：真机首次启动无缓存时，登录流程正常回落到默认用户。
-        return defaultValue;
+        try {
+            const v = wx.getStorageSync(key);
+            // 关键：'' / undefined / null 一律视为「无值」，回落到默认值。
+            // 注意不能用 ?? —— '' 不是 nullish，这正是官方接口的陷阱所在。
+            if (v === '' || v === undefined || v === null) {
+                return defaultValue;
+            }
+            return v as T;
+        } catch (err) {
+            console.warn(`[WxStorage] get(${key}) 失败:`, err);
+            return defaultValue;
+        }
     }
 
     public set<T>(key: string, value: T): void {
-        // TODO(wechat-phase2): 接入 wx.setStorageSync(key, value)
-        //   注意：小游戏单个 key 上限 1MB，全部数据上限 10MB，超限会抛异常，
-        //   战绩等大数组建议只存摘要或改存云端。
-        //   验证方法：真机设置后杀进程重进，数据仍在。
+        try {
+            wx.setStorageSync(key, value);
+        } catch (err) {
+            // 单 key 上限 1MB、总量上限 10MB，超限会抛异常。
+            // 这里降级为告警而非抛出 —— 存储失败不应阻断游戏主流程，
+            // 但必须留下日志，否则「设置没生效」会很难查。
+            console.error(`[WxStorage] set(${key}) 失败（可能超出容量上限）:`, err);
+        }
     }
 
     public remove(key: string): void {
-        // TODO(wechat-phase2): 接入 wx.removeStorageSync(key)
+        try {
+            wx.removeStorageSync(key);
+        } catch (err) {
+            console.warn(`[WxStorage] remove(${key}) 失败:`, err);
+        }
     }
 
     public clear(): void {
-        // TODO(wechat-phase2): 接入 wx.clearStorageSync()
-        //   注意：会清空全部本地缓存（含登录态），仅退出登录时使用。
+        try {
+            // 会清空全部本地缓存（含登录态），仅退出登录等场景使用
+            wx.clearStorageSync();
+            console.log('[WxStorage] 已清空全部本地缓存');
+        } catch (err) {
+            console.error('[WxStorage] clear() 失败:', err);
+        }
     }
 }

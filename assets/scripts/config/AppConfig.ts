@@ -27,8 +27,8 @@ export class AppConfig {
     /** 微信小游戏 appid。第二阶段已填入真实值（与 build-templates / builder.json 保持一致）。 */
     public static readonly WX_APPID = 'wxd5cc731e7273d122';
 
-    /** 云开发环境 ID 占位。第二阶段替换为 wx.cloud.init({ env }) 的真实环境 ID。 */
-    public static readonly CLOUD_ENV = 'TODO';
+    /** 云开发环境 ID。第二阶段已填入真实值。 */
+    public static readonly CLOUD_ENV = 'cloud1-d7gp1em2efcf2b05b';
 
     /** 云函数所在地域占位（部分环境需要）。 */
     public static readonly CLOUD_REGION = 'ap-shanghai';

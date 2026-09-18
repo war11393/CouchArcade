@@ -108,13 +108,14 @@ class ServiceLocatorImpl implements ServiceContainer {
             this._room = new MockRoomService(this._auth, this._cloud, this._netSync);
         } else {
             console.log('[ServiceLocator] 注入 Wx 实现（真机模式）');
+            // 依赖顺序：storage → cloud → （auth 依赖 cloud+storage）→ 其余
             this._storage = new WxStorageService();
             this._platform = new WxPlatformService();
-            this._auth = new WxAuthService();
             this._cloud = new WxCloudService();
+            this._auth = new WxAuthService(this._cloud, this._storage);
             this._share = new WxShareService();
             this._netSync = new WxNetSyncService();
-            this._room = new WxRoomService();
+            this._room = new WxRoomService(this._cloud, this._auth, this._storage);
         }
 
         this._inited = true;
