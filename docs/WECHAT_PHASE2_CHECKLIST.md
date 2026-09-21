@@ -38,9 +38,32 @@
 
 ## 阶段 1：微信开发者工具基础配置
 
-- [ ] 打开微信开发者工具，导入项目，目录选 `build/wechatgame/`
+- [ ] 打开微信开发者工具，**导入项目**，目录选 **仓库根 `C:\Users\war11\wechat_game`**
+      （**不是** `build/wechatgame/`，原因见 §1.0）
 - [ ] 项目类型选 **小游戏**，AppID 填 `wxd5cc731e7273d122`
 - [ ] 确认编译无报错（若报 `game.json` 相关错误，见文末「常见问题」）
+
+### 1.0 为什么导入仓库根而不是 build/wechatgame
+
+云函数要用 DevTools 的「右键 → 上传并部署」，这要求 **DevTools 在项目目录内能看到
+`cloudfunctions/`**。而本仓库的布局是：
+
+```
+C:\Users\war11\wechat_game\        ← 导入这个（仓库根）
+├── project.config.json            ← 新增：把两边接起来
+│     miniprogramRoot  = "build/wechatgame/"   → 游戏本体（构建产物）
+│     cloudfunctionRoot = "cloudfunctions/"    → 云函数源码
+├── cloudfunctions/                ← 9 个云函数 + common（共享源）
+└── build/wechatgame/              ← Cocos 构建产物（game.json / game.js 在这）
+```
+
+若直接导入 `build/wechatgame/`，DevTools 看不到外层的 `cloudfunctions/`，
+**界面上不会出现云开发图标，也无法右键部署任何云函数**。
+
+> ❌ 为什么不采用「把 cloudfunctions 拷进 build/wechatgame」：
+> `build/` 是构建产物（已 gitignore），Cocos **每次构建先清空再写入** ——
+> 拷进去的云函数会随每次重建消失，需要反复手动重拷。
+> 仓库根方案一次配置长期有效。
 
 > ⚠️ **务必核对 AppID**：打开 `详情 → 基本信息`，确认 AppID 是 `wxd5cc731e7273d122`。
 > 若显示 `wx6ac3f5090a6b99c5`（Cocos 默认示例 appid），说明构建时 appid 被覆盖了，
@@ -149,7 +172,14 @@ Cocos 构建会按优先级合并以下来源，**后者覆盖前者**：
 
 ## 阶段 5：部署 9 个云函数
 
-对 `cloudfunctions/` 下每个目录：**右键目录 → 上传并部署：云端安装依赖** → 等待完成（首次 30~60 秒）。
+**云函数位置**：`C:\Users\war11\wechat_game\cloudfunctions\`
+
+（注意它**不在** `build/wechatgame/` 里 —— 它在仓库根，与构建产物平级。
+ DevTools 通过 `project.config.json` 的 `cloudfunctionRoot` 找到它，
+ 所以在工具左侧文件树里应能看到一个 `cloudfunctions` 目录，图标与普通目录不同。）
+
+操作：在 DevTools 左侧文件树展开 `cloudfunctions` → 对每个函数目录
+**右键 → 上传并部署：云端安装依赖** → 等待完成（首次 30~60 秒/个）。
 
 - [ ] `login`
 - [ ] `createRoom`
@@ -161,10 +191,22 @@ Cocos 构建会按优先级合并以下来源，**后者覆盖前者**：
 - [ ] `gomoku_move`
 - [ ] `settleGame`
 
+> 🔴 **不要部署 `common`**：`cloudfunctions/common/` 是**共享代码源**
+> （只有 `index.js`，没有 `package.json`），不是云函数。
+> 它的内容由 `tools/gen-cloudfunctions.js` 复制成每个函数目录内的 `common.js`，
+> 部署 `common` 只会产生一个无用的云函数。
+>
 > ⚠️ 函数名必须与目录名**完全一致**（客户端按名调用，见 `config/Collections.ts` 的 `CLOUD_FUNCTIONS`）。
 > ⚠️ 微信云函数**不能 require 上级目录**，每个目录里都有一份 `common.js` 副本 ——
 > 如果以后改了 `cloudfunctions/common/index.js`，**必须重跑 `node tools/gen-cloudfunctions.js` 同步**，
 > 然后重新部署受影响的函数。
+
+验证部署成功：云开发控制台 → **云函数** → 列表里应出现这 9 个函数。
+再回到模拟器看日志，预期出现：
+
+```
+[WxAuth] 登录成功 openid=oXXXX...
+```
 
 ---
 

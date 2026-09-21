@@ -17,6 +17,10 @@ native
 cloudfunctions/**/node_modules/
 *.log
 
+# 微信开发者工具的本机私有配置（含编译模式、调试基础库等机器相关设置）
+# 与 project.config.json（团队共享）区分开，不进版本库
+project.private.config.json
+
 #///////////////////////////
 # 🔑 凭据（严禁提交）
 #///////////////////////////
