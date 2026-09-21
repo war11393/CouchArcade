@@ -2,7 +2,9 @@
 
 > **⚠️ 当前版本状态：未验证（UNVERIFIED）**
 >
-> 对应 git 标签：**`wechat-phase2-unverified`**（指向 `d599570`）。
+> 对应 git 标签：**`wechat-phase2-unverified`**
+> （用 `git rev-parse wechat-phase2-unverified` 查它当前指向的提交；
+> 该标签会随每次未验证改动前移，故此处不写死 SHA 以免过期）
 >
 > **✅ 已通过（自动校验）**
 > `typecheck` exit 0 ｜ 单测 52 项全通过 ｜ 场景校验 PASSED ｜
