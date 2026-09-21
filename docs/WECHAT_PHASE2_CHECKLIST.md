@@ -65,6 +65,18 @@ C:\Users\war11\wechat_game\        ← 导入这个（仓库根）
 > 拷进去的云函数会随每次重建消失，需要反复手动重拷。
 > 仓库根方案一次配置长期有效。
 
+> 🔴 **本文件里的 `packOptions.ignore` 必须保持为空数组 —— 不要往里面加东西。**
+>
+> 踩过的坑：曾加 `"assets"` 想排除 Cocos 源资源目录，游戏直接起不来：
+> ```
+> Error: module 'assets/internal/index.js' is not defined
+> ```
+> 因为 WeChat 解析 `packOptions.ignore` 是**相对于 `miniprogramRoot`（代码根）**，
+> 而非项目根 —— `"assets"` 命中的是 `build/wechatgame/assets/`，
+> 那正是游戏两个资源包（`internal` / `main`）的所在处。
+>
+> 有了 `miniprogramRoot`，仓库根其它目录本来就不会进包，无需任何 ignore。
+
 > ⚠️ **务必核对 AppID**：打开 `详情 → 基本信息`，确认 AppID 是 `wxd5cc731e7273d122`。
 > 若显示 `wx6ac3f5090a6b99c5`（Cocos 默认示例 appid），说明构建时 appid 被覆盖了，
 > 见下方「appid 有四个来源」。
@@ -270,6 +282,7 @@ Cocos 构建会按优先级合并以下来源，**后者覆盖前者**：
 | 现象 | 根因 | 处理 |
 | :--- | :--- | :--- |
 | `game.json: ["workers"] 不能为 ''` | 构建模板有空字符串字段 | 已修复（提交 `cada124`），若复发检查 `build-templates/wechatgame/game.json` |
+| **`module 'assets/internal/index.js' is not defined`** | **`packOptions.ignore` 误排除了构建产物里的 `assets/`** | 见 §1.0 红字。把 `packOptions.ignore` 置为 `[]` 后重新编译 |
 | **`同步云环境列表 ret: -80002`** | **appid 被 `profiles/` 覆盖成 Cocos 默认值** | 见 §1.1，三处同改 appid 后**重新导入项目** |
 | **`app.json 中未定义自定义编译中指定的启动页面`** | DevTools 残留的小程序编译条件 | 编译模式下拉 → 选「普通编译」 |
 | **`jsbridge not ready` / `xmldom dom-parser` 报错** | 灰度基础库与 Cocos 适配层不兼容 | 换掉灰度基础库 + 清缓存重新编译 |
