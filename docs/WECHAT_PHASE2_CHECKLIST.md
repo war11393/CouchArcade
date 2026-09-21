@@ -2,12 +2,29 @@
 
 > **⚠️ 当前版本状态：未验证（UNVERIFIED）**
 >
-> 代码改动已全部提交（git 标签 `wechat-phase2-unverified`），
-> 自动校验（typecheck / 单测 / 场景校验 / 云函数语法 / 边界铁律）**均通过**，
-> 但**尚未经过任何真机验证**：未在微信开发者工具中构建、未部署云函数、
-> 未创建集合、未做过真机联调。
+> 对应 git 标签：**`wechat-phase2-unverified`**（指向 `d599570`）。
 >
-> 完成本清单后，请把状态更新为「已验证」，并在 CHANGELOG 或本文件顶部注明验证日期与环境。
+> **✅ 已通过（自动校验）**
+> `typecheck` exit 0 ｜ 单测 52 项全通过 ｜ 场景校验 PASSED ｜
+> 云函数语法检查 ｜ 边界铁律（真实 `wx.*` 仅在 `core/services/wx/` 五个文件）
+>
+> **❌ 未验证 —— 本标签的关键前提：真机从未成功跑通**
+> 截至标注时，微信开发者工具中**启动即失败**：
+> `Error: module 'assets/internal/index.js' is not defined`。
+> 根因已定位（`project.config.json` 的 `packOptions.ignore` 误排除了
+> `build/wechatgame/assets/`，修复见提交 `b7770a7`），
+> 但**该修复尚未重新编译验证**，故整体仍标记为未验证。
+> 阶段 6 的全部联调项（登录 / 建房 / 落子同步 / 断网对账 / 热启动切房）**一项都没跑过**。
+>
+> **🔍 推断性内容（明确点名，勿当作已验证）**
+> ① 「`packOptions.ignore` 相对 `miniprogramRoot` 解析」是**推断结论** ——
+>    依据是报错路径与 ignore 项精确对应等三条旁证，未经微信官方文档确证；
+> ② `WxNetSyncService` 的下行字段解析（`games_gomoku.lastMove` /
+>    `games_planehunt.flips`）系按云函数源码推断，未与服务端写库结构逐字段核对。
+>
+> **微信侧已完成的步骤**（用户操作，见下方勾选）：
+> 重新构建、导入项目（仓库根）、创建 5 个集合、部署 9 个云函数。
+> **下一步**：重新编译，确认启动成功 → 跑阶段 6 联调 → 再把状态改为「已验证」并注明日期与环境。
 >
 > **用途**：代码侧已全部就绪（7 个 Wx 服务实现完毕、`TODO(wechat-phase2)` 清零、
 > `USE_MOCK = false`、appid/环境 ID 已填）。本文档是**你需要在微信侧手工完成的全部事项**，

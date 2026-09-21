@@ -329,12 +329,29 @@ public static USE_MOCK = false;   // ← 唯一需要改的开关
 
 ### 第二阶段（代码侧已完成，**状态：未验证**）
 
-> **进度：7 个 Wx 服务已全部实现，`TODO(wechat-phase2)` 计数 42 → 0。
-> 剩余工作是「微信开发者工具侧的配置与真机验证」，见 `docs/WECHAT_PHASE2_CHECKLIST.md`。**
+> **进度**：7 个 Wx 服务全部实现（`TODO(wechat-phase2)` 42 → 0），
+> 并已完成真机联调阶段暴露问题的修复（自上一个未验证标签起共 **7 个提交**，
+> `cada124` → `d599570`）。
 >
-> ⚠️ **未验证声明**：以下改动均通过自动校验（typecheck / 单测 52 项 / 场景校验 /
-> 云函数语法 / 边界铁律），但**未经过真机验证** —— 未在微信开发者工具中构建过、
-> 未部署云函数、未创建集合、未做真机联调。
+> ⚠️ **未验证声明 —— 关键前提：真机从未成功跑通**
+>
+> **✅ 已通过（自动校验）**：`typecheck` exit 0 ｜ 单测 52 项全通过 ｜
+> 场景校验 PASSED ｜ 云函数语法检查 ｜ 边界铁律（真实 `wx.*` 仅存在于
+> `core/services/wx/` 五个文件）
+>
+> **❌ 未验证**：微信开发者工具中**启动仍失败**于
+> `Error: module 'assets/internal/index.js' is not defined` —— 根因已定位
+> （`project.config.json` 的 `packOptions.ignore` 误排除了 `build/wechatgame/assets/`，
+> 修复见提交 `b7770a7`），但**修复后未再编译验证**；
+> 阶段 6 联调项（登录 / 建房 / 落子同步 / 断网全量对账 / 热启动切房 / 杀进程恢复）
+> **全部未跑过**。
+>
+> **🔍 推断性内容（勿当作已验证）**：
+> ① 「`packOptions.ignore` 相对 `miniprogramRoot` 解析」为**推断结论**，
+>    依据为报错路径与 ignore 项精确对应等三条旁证，未经官方文档确证；
+> ② `WxNetSyncService` 的下行字段解析（`games_gomoku.lastMove` /
+>    `games_planehunt.flips`）系按云函数源码推断，未逐字段核对服务端写库结构。
+>
 > 对应 git 标签：`wechat-phase2-unverified`。
 
 已做：
@@ -346,17 +363,29 @@ public static USE_MOCK = false;   // ← 唯一需要改的开关
       与 `cloudfunctions/common/index.js` 的 `ERR` 严格对齐
 - ✅ 新增 `.typecheck/wx-shim.d.ts`：`wx` 全局 API 最小类型声明
       （本仓库无 minigame-api-typings，缺此文件无法通过严格模式校验）
-- ✅ 补上清单 §1.3 标注「最容易漏」的**热启动分支**：
-      `IPlatformService.subscribeShow()`（wx.onShow）+ LoadingScene `_hookShowListener()`
-- ✅ 补上 §1.12 要求的**断线重连触发**：
-      AppBootstrap `_hookReconnect()`（onShow + 网络恢复），经抽象层不直调 wx.*
+- ✅ 热启动分支：`IPlatformService.subscribeShow()`（wx.onShow）+ `AppHooks` 注册
+- ✅ 断线重连触发：`AppHooks` 注册 onShow + 网络恢复（经抽象层，不直调 wx.*）
+- ✅ 版本更新检查：注册与弹窗上移到应用级，场景只订阅状态并在 onDestroy 退订
 - ✅ 边界铁律保持：全部真实 `wx.*` 调用仅存在于 `core/services/wx/` 五个文件
 
-未做（需人工在微信侧操作，无法由代码完成）：
+真机联调暴露并已修复的问题（均因「写了但从没被执行」或配置源冲突）：
 
-- ❌ 微信开发者工具中的云环境开通、集合创建、索引配置
-- ❌ 9 个云函数的上传部署
-- ❌ 真机联调与体验版上传
+- ✅ appid 有**四个**来源，漏掉优先级最高的 `profiles/`（被 Cocos 默认示例
+      appid 覆盖 → 云环境列表同步失败 `ret: -80002`）
+- ✅ `callFunction` 形状校验缺失：云函数未部署时 wx **不会 reject**，
+      错误被静默吞成 `null`，调用方只能报出误导性的「缺少 openid」
+- ✅ `AppBootstrap` 从未被挂到任何场景 → 其内部注册全是死代码
+      （`_hookReconnect` / `registerCloudHandlers` / `bindMockCloud`，后者还无任何调用方）
+- ✅ 新增仓库根 `project.config.json`（`miniprogramRoot` + `cloudfunctionRoot`），
+      否则 DevTools 看不到 `cloudfunctions/` 无法部署
+- ✅ 游戏名统一为「沙发派对」（共 5 处来源，原仅记 2 处）
+- ✅ 场景 `cc.Scene._id` 与 `.meta` uuid 不同源 → `.scene` 反复 dirty
+- ✅ 版本更新回调挂在会被销毁的场景组件上 → 悬空引用
+
+待验证（本标签的前提）：
+
+- ❌ 真机**从未成功启动**
+- ❌ 阶段 6 联调与体验版上传全部未跑
 
 ---
 
