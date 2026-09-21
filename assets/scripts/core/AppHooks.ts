@@ -29,7 +29,7 @@
  * （本项目一贯用构造注入规避环依赖，此处保持一致）。
  */
 
-import { AiLevel } from '../config/AppConfig';
+import { AppConfig, AiLevel } from '../config/AppConfig';
 import { GameId } from '../config/GameList';
 import { uiManager } from './UIManager';
 import { NetStatus } from './services/IServices';
@@ -43,6 +43,117 @@ const VALID_GAME_IDS: readonly string[] = [GameId.PLANE_HUNT, GameId.GOMOKU];
 let _registered = false;
 /** 注入的服务容器（registerAppHooks 时赋值）。 */
 let _svc: ServiceContainer | null = null;
+
+// ============================================================================
+// 版本更新状态（供 Loading 页显示提示）
+// ============================================================================
+
+/**
+ * 版本更新状态。
+ *
+ * 为什么要把它做成「应用级状态 + 订阅」而不是让 LoadingScene 直接注册回调：
+ * `wx.getUpdateManager()` 的回调会**长期存活**，而 Loading 场景在
+ * `gotoLobby()` 后就被销毁了。若回调闭包直接引用 LoadingScene 组件，
+ * 更新就绪时（很可能是用户切回前台之后）会往**已销毁的节点**写 Label ——
+ * 这正是原先把注册写在 `LoadingScene._hookUpdateManager()` 的问题。
+ *
+ * 现在：注册在应用级（本模块），弹窗经 `uiManager`（应用级）；Loading 页只
+ * **订阅状态**来刷新自己的提示文案，并在 onDestroy 里退订，不留悬空引用。
+ */
+export type UpdateState = 'idle' | 'downloading' | 'ready' | 'postponed' | 'failed';
+
+let _updateState: UpdateState = 'idle';
+const _updateListeners: Array<(s: UpdateState) => void> = [];
+
+/** 当前版本更新状态。 */
+export function getUpdateState(): UpdateState {
+    return _updateState;
+}
+
+/**
+ * 订阅版本更新状态变化。
+ *
+ * 订阅时会**立即回调一次当前状态**，订阅者无需自己先读一次。
+ *
+ * @returns 退订函数（组件 onDestroy 里必须调用）
+ */
+export function onUpdateStateChange(cb: (s: UpdateState) => void): () => void {
+    _updateListeners.push(cb);
+    try {
+        cb(_updateState);
+    } catch (err) {
+        console.error('[AppHooks] 更新状态回调异常:', err);
+    }
+    return () => {
+        const i = _updateListeners.indexOf(cb);
+        if (i >= 0) {
+            _updateListeners.splice(i, 1);
+        }
+    };
+}
+
+function _setUpdateState(s: UpdateState): void {
+    if (_updateState === s) {
+        return;
+    }
+    _updateState = s;
+    for (const cb of _updateListeners.slice()) {
+        try {
+            cb(s);
+        } catch (err) {
+            console.error('[AppHooks] 更新状态回调异常:', err);
+        }
+    }
+}
+
+/**
+ * 注册版本更新检查（应用级，只注册一次）。
+ *
+ * 微信约束：
+ *   · 小游戏**不支持强制更新**，`applyUpdate()` 必须由用户确认后触发；
+ *   · 首次上传的版本不会触发更新流程（属正常现象）；
+ *   · 越早注册越能覆盖「热启动拿到新版本」的情况。
+ */
+function _installUpdateManager(svc: ServiceContainer): void {
+    if (AppConfig.USE_MOCK) {
+        console.log('[AppHooks] Mock 模式跳过真实版本检查');
+        return;
+    }
+
+    const platform = svc.platform;
+    if (typeof platform.checkUpdate !== 'function') {
+        console.warn('[AppHooks] 平台服务未实现 checkUpdate，跳过版本更新检查');
+        return;
+    }
+
+    try {
+        platform.checkUpdate({
+            onHasUpdate: () => {
+                // 知道有新版本即进入下载阶段（wx 未提供下载进度回调）
+                _setUpdateState('downloading');
+            },
+            onUpdateReady: (apply) => {
+                _setUpdateState('ready');
+                // 弹窗由应用级负责：Loading 场景已销毁时依然能正常询问用户
+                uiManager.showChoiceDialog({
+                    title: '版本更新',
+                    subtitle: '新版本已下载完成',
+                    choices: [
+                        { label: '立即重启更新', onPick: () => apply() },
+                        { label: '稍后再说', onPick: () => _setUpdateState('postponed') },
+                    ],
+                });
+            },
+            onUpdateFailed: () => {
+                console.warn('[AppHooks] 新版本下载失败，继续使用当前版本');
+                _setUpdateState('failed');
+            },
+        });
+        console.log('[AppHooks] 已注册版本更新检查');
+    } catch (err) {
+        console.warn('[AppHooks] 注册更新检查失败（忽略）:', err);
+    }
+}
 
 /**
  * 解析启动参数里的「直进房间」意图。
@@ -169,6 +280,9 @@ export function registerAppHooks(svc: ServiceContainer): void {
         platform.subscribeNetworkRestore(() => tryReconnect('network-restored'));
         console.log('[AppHooks] 已注册网络恢复监听');
     }
+
+    // ---- 版本更新检查（应用级注册，回调长存活，不能挂在会被销毁的场景上）----
+    _installUpdateManager(svc);
 }
 
 /** 仅供调试/测试：查询是否已注册。 */

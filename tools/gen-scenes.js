@@ -23,7 +23,7 @@ const { loadingTree, lobbyTree, roomTree, gameTree } = require('./ui-trees.js');
 const ROOT = path.resolve(__dirname, '..');
 const SCENE_DIR = path.join(ROOT, 'assets', 'scenes');
 
-const { LAYER_DEFAULT, LAYER_UI_2D, makeNode, widget, uiTransform, stableUuid, compressedUuid, v3 } = B;
+const { LAYER_DEFAULT, LAYER_UI_2D, makeNode, widget, uiTransform, stableUuid, sceneUuid, compressedUuid, v3 } = B;
 
 const DESIGN_W = 720;
 const DESIGN_H = 1280;
@@ -151,16 +151,20 @@ function main() {
 
     for (const s of SCENES) {
         const arr = buildScene(s.file, s.script, s.tree);
+        // 不加尾部换行 —— 与 Cocos 编辑器的序列化输出保持一致。
+        // 否则每次 Cocos 打开/保存场景都会删掉这个换行，.scene 永远显示
+        // 有一处无意义的 diff（与 cc.Scene._id 同源问题一起构成「反复 dirty」）。
         fs.writeFileSync(
             path.join(SCENE_DIR, s.file + '.scene'),
-            JSON.stringify(arr, null, 2) + '\n',
+            JSON.stringify(arr, null, 2),
             'utf8',
         );
         fs.writeFileSync(
             path.join(SCENE_DIR, s.file + '.scene.meta'),
             JSON.stringify({
                 ver: '1.1.50', importer: 'scene', imported: true,
-                uuid: stableUuid(s.file, 'scenemeta'),
+                // 必须与 cc.Scene._id 同值：sceneUuid 与 scene-builder 共用一处来源
+                uuid: sceneUuid(s.file),
                 files: ['.json'], subMetas: {}, userData: {},
             }, null, 2),
             'utf8',

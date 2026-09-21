@@ -32,6 +32,22 @@ function stableUuid(name, suffix) {
     return `${h}-${h2.slice(0, 4)}-4${h2.slice(4, 7)}-a${h.slice(0, 3)}-${h}${h2}`.slice(0, 36);
 }
 
+/**
+ * 场景资产 uuid —— `cc.Scene._id` 与 `<场景>.scene.meta` 的 uuid 必须是**同一个值**。
+ *
+ * 为什么必须共用一处来源：
+ * Cocos Creator 认为 `cc.Scene._id` 就等于该场景资产的 uuid（即 .meta 里的 uuid）。
+ * 若生成器给两者算出不同值，编辑器**每次打开/保存场景都会把 `cc.Scene._id` 改写回
+ * meta 的 uuid** —— 表现为 .scene 文件反复 dirty：跑一次 gen-scenes 变干净，
+ * 开一次 Cocos 又变脏，来回打架。
+ *
+ * 此前 scene-builder 用后缀 'scene'、gen-scenes 用后缀 'scenemeta'，
+ * 两个不同种子 → 值必然不同。现在两边都走本函数，从源头保证一致。
+ */
+function sceneUuid(sceneName) {
+    return stableUuid(sceneName, 'scenemeta');
+}
+
 /** 稳定 22 位压缩 uuid（节点 / 组件 _id） */
 const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 function compressedUuid(name, suffix) {
@@ -398,7 +414,7 @@ function compile(sceneName, scriptUuid, rootChildren, scriptNodePath) {
         _euler: v3(),
         autoReleaseAssets: false,
         _globals: { __id__: 0 }, // 回填
-        _id: stableUuid(sceneName, 'scene'),
+        _id: sceneUuid(sceneName),
     });
 
     // ---- 递归建节点 + 组件（先占位，引用后回填） ----
@@ -667,6 +683,7 @@ module.exports = {
     LAYER_UI_3D,
     CAM_VISIBILITY,
     stableUuid,
+    sceneUuid,
     compressedUuid,
     v3, v2, v4, quat, color, size, rect, hexToColor,
     uiTransform, label, graphics, progressBar, scrollView, layout, widget, button, mask,

@@ -33,7 +33,7 @@
 
 import { _decorator, Component, Node, ProgressBar, UITransform, Vec3, game, view } from 'cc';
 import { AppConfig, AiLevel } from '../config/AppConfig';
-import { parseRoomLaunchQuery } from '../core/AppHooks';
+import { parseRoomLaunchQuery, onUpdateStateChange } from '../core/AppHooks';
 import { services, ensureServices } from '../core/ServiceLocator';
 import { uiManager } from '../core/UIManager';
 import { findNode, requireNode, setLabelText, labelAt } from '../core/UIFactory';
@@ -64,6 +64,8 @@ export class LoadingScene extends Component {
     private _lastAdvanceAt = 0;
     /** 更新管理器回调是否已注册（避免重复注册）。 */
     private _updateHooked = false;
+    /** 版本更新状态订阅的退订函数（onDestroy 里必须调用）。 */
+    private _unsubscribeUpdate: (() => void) | null = null;
 
     protected async onLoad(): Promise<void> {
         // 服务兜底：确保 ServiceLocator 已注入，并注册应用级钩子
@@ -87,6 +89,15 @@ export class LoadingScene extends Component {
 
     protected onDestroy(): void {
         this.unschedule(this._checkStuck);
+        // 退订版本更新状态，避免本组件销毁后仍被回调（更新回调是长存活的）
+        if (this._unsubscribeUpdate) {
+            try {
+                this._unsubscribeUpdate();
+            } catch (err) {
+                console.warn('[LoadingScene] 退订版本更新状态失败:', err);
+            }
+            this._unsubscribeUpdate = null;
+        }
         // 注意：热启动（onShow）监听**不在此处注销**。
         // 它由 core/AppHooks.ts 在模块作用域注册，生命周期与整个小游戏一致 ——
         // 若绑定到本场景，gotoLobby/gotoRoom 销毁 Loading 场景后监听就会失效，
@@ -236,59 +247,40 @@ export class LoadingScene extends Component {
     }
 
     /**
-     * 注册微信版本更新检查。
+     * 订阅版本更新状态，用于刷新本页的提示文案。
      *
-     * 要点（微信官方约束）：
-     *   · 小游戏**不支持强制更新**，必须用户确认后 applyUpdate() 重启；
-     *   · 首次上传的版本不会触发更新流程；
-     *   · Mock 阶段（USE_MOCK）只打印日志，绝不调用任何 wx.* API。
+     * **注册本身不在这里** —— `wx.getUpdateManager()` 的回调会长期存活，
+     * 而 Loading 场景在 gotoLobby/gotoRoom 后就被销毁；若把注册写在场景组件里，
+     * 更新就绪时（往往发生在用户切回前台之后）回调会往**已销毁的节点**写 Label。
+     *
+     * 因此注册与弹窗都在应用级（core/AppHooks.ts），本页只订阅状态显示提示，
+     * 并在 onDestroy 里退订，不留悬空引用。
      */
     private _hookUpdateManager(): void {
         if (this._updateHooked) return;
         this._updateHooked = true;
 
-        if (AppConfig.USE_MOCK) {
-            console.log('[LoadingScene] 检查更新（Mock 模式跳过真实检查）');
-            return;
-        }
-
-        const platform = services.platform as unknown as {
-            checkUpdate?: (cb: {
-                onHasUpdate?: () => void;
-                onUpdateReady?: (apply: () => void) => void;
-                onUpdateFailed?: () => void;
-            }) => void;
-        };
-
-        if (typeof platform.checkUpdate !== 'function') {
-            console.warn('[LoadingScene] 平台服务未实现 checkUpdate，跳过版本更新检查');
-            return;
-        }
-
-        try {
-            platform.checkUpdate({
-                onHasUpdate: () => {
+        this._unsubscribeUpdate = onUpdateStateChange((state) => {
+            switch (state) {
+                case 'downloading':
                     this._setHint('发现新版本，正在下载…');
-                },
-                onUpdateReady: (apply) => {
+                    break;
+                case 'ready':
                     this._setHint('新版本已就绪，即将重启更新');
-                    // 用户确认后再重启，符合「小游戏不支持强制更新」的要求
-                    uiManager.showChoiceDialog({
-                        title: '版本更新',
-                        subtitle: '新版本已下载完成',
-                        choices: [
-                            { label: '立即重启更新', onPick: () => apply() },
-                            { label: '稍后再说', onPick: () => this._setHint(' ') },
-                        ],
-                    });
-                },
-                onUpdateFailed: () => {
+                    break;
+                case 'postponed':
+                    // 用户选择「稍后再说」→ 收起提示
+                    this._setHint(' ');
+                    break;
+                case 'failed':
                     this._setHint('更新失败，可继续游戏');
-                },
-            });
-        } catch (err) {
-            console.warn('[LoadingScene] 注册更新检查失败（忽略）:', err);
-        }
+                    break;
+                default:
+                    // 'idle'：无更新信息，Hint 交由 _checkStuck 的兜底逻辑管理，
+                    // 此处不写文案（否则会覆盖「加载较慢」提示）
+                    break;
+            }
+        });
     }
 
     /** 启动失败时给一个可点重试（避免用户卡在加载页无处可去）。 */
