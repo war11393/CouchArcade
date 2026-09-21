@@ -25,7 +25,6 @@
 import { _decorator, Component, game, Game, director } from 'cc';
 import { AppConfig } from '../config/AppConfig';
 import { services } from './ServiceLocator';
-import { registerCloudHandlers } from '../stats/StatsService';
 
 const { ccclass } = _decorator;
 
@@ -52,8 +51,10 @@ export class AppBootstrap extends Component {
         // 3) 云开发初始化（Mock 为内存 Map；Wx 为 wx.cloud.init）
         services.cloud.init();
 
-        // 4) 注册 Mock 云函数处理器（战绩写入等）
-        registerCloudHandlers();
+        // 4) Mock 云函数处理器（战绩写入等）
+        //    已迁至 core/services/mock/MockCloudHandlers.ts，
+        //    由 ServiceLocator.init() 在注入 Mock 实现时调用（保证执行）。
+        //    原先写在这里的 registerCloudHandlers() 因本组件未挂载而从未执行。
 
         // 5) 打印配置摘要，便于人工核对默认参数基线
         console.log('[AppBootstrap] 配置摘要:', JSON.stringify(AppConfig.describe(), null, 2));

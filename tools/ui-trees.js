@@ -220,15 +220,20 @@ function loadingTree() {
     const logo = fillNode('Logo', 168, 168, C.primary, {
         pos: [0, 300], radius: RADIUS.lg,
         children: [
-            textNode('LogoText', '合', FONT.display, C.onPrimary, {
+            textNode('LogoText', '沙', FONT.display, C.onPrimary, {
                 pos: [0, 0], size: [168, 84], bold: true,
             }),
         ],
     });
 
-    const title = textNode('Title', '小游戏合集', FONT.display, C.ink, {
+    // ⚠️ 这里的标题/品牌字是**写死的静态文本**（ui-trees.js 是场景的唯一来源）。
+    // 改名时除本文件外，还须同步：build-templates/wechatgame/project.config.json
+    // 的 projectname、settings/v2/packages/builder.json 的 common.name、以及
+    // project.config.json（仓库根）的 projectname —— 共四处，详见 docs/DEFAULT_PARAMETERS.md。
+    const title = textNode('Title', '沙发派对', FONT.display, C.ink, {
         pos: [0, 140], size: [640, 78], bold: true,
     });
+    // 副标题描述「内容」（含哪两款游戏），与游戏名无关，故不随改名变化
     const subtitle = textNode('Subtitle', '寻机头 · 五子棋', FONT.sub, C.inkFaint, {
         pos: [0, 78], size: [640, 40],
     });
@@ -335,7 +340,10 @@ function lobbyTree() {
         makeCard('Card_gomoku', '五子棋', '15×15 连五者胜', '棋', C.accent, -cardH / 2 - step),
     );
 
-    const footer = textNode('Footer', 'MVP：寻机头 · 五子棋  |  数据来源：Mock 通道', FONT.caption, C.inkFaint, {
+    // 底部说明：实际文案由 LobbyScene 在运行时按 AppConfig.USE_MOCK 刷新
+    // （Mock 模式写「Mock 通道」，真机模式写「微信云开发」）。
+    // 这里只放中性占位，避免出现「已是真机却写着 Mock」的误导。
+    const footer = textNode('Footer', 'MVP：寻机头 · 五子棋', FONT.caption, C.inkFaint, {
         pos: [0, -600], size: [660, 34],
     });
 

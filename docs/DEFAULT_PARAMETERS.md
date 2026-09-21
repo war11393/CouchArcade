@@ -21,9 +21,9 @@
 | 安全区 | `SafeAreaAdapter` 从 `IPlatformService.getSystemInfo()` 读取 | 已实现 | `assets/scripts/core/SafeAreaAdapter.ts`<br>Mock：`core/services/mock/MockPlatformService.ts`<br>Wx 桩：`core/services/wx/WxPlatformService.ts` | ✅ |
 | 首包预算 | ≤ 4MB | 预算常量已设 | `AppConfig.FIRST_PACKAGE_BUDGET_BYTES = 4 * 1024 * 1024`<br>`build-templates/wechatgame/project.config.json` → `setting.minified: true` | ✅ |
 | 构建平台 | 微信小游戏 | `wechatgame` | `settings/v2/packages/builder.json` → `common.platform` | ✅（第二阶段已开始构建） |
-| appid | 真实值 | `wxd5cc731e7273d122` | `settings/v2/packages/builder.json` → `wechatgame.appid` / `packages.wechatgame.appid`<br>`build-templates/wechatgame/project.config.json` → `appid`<br>`AppConfig.WX_APPID` | ✅（四处已统一） |
-| 云环境占位 | 占位值 | `"TODO"` | `AppConfig.CLOUD_ENV = 'TODO'`（待 B2 建环境后填真实环境 ID） | ⏳ 待填 |
-| 游戏名称 | `沙发派对` | 与微信工具一致 | `builder.json` → `common.name`<br>`build-templates/wechatgame/project.config.json` → `projectname` | ✅ |
+| appid | 真实值 | `wxd5cc731e7273d122` | **共四处**：`settings/v2/packages/builder.json` → `wechatgame.appid` / `packages.wechatgame.appid`<br>`build-templates/wechatgame/project.config.json` → `appid`<br>`project.config.json`（仓库根）→ `appid`<br>`profiles/v2/packages/wechatgame.json` → `appid`（**本机文件，覆盖前两者**）<br>另 `AppConfig.WX_APPID` | ✅（四处已统一为真实值） |
+| 云环境 ID | 真实值 | `cloud1-d7gp1em2efcf2b05b` | `AppConfig.CLOUD_ENV` | ✅（第二阶段已填真实环境 ID） |
+| 游戏名称 | `沙发派对` | 与微信工具一致 | **共五处，改名时全部要改**：<br>① `tools/ui-trees.js` → Loading 的 `Title` 与 `LogoText`（**玩家唯一能看到的那个**，须重跑 `gen-scenes.js`）<br>② `settings/v2/packages/builder.json` → `common.name`<br>③ `build-templates/wechatgame/project.config.json` → `projectname`<br>④ `project.config.json`（仓库根）→ `projectname`<br>⑤ `profiles/v2/packages/wechatgame.json` → `builder.common.name`（**本机文件，覆盖 ②**） | ✅ |
 | 远程服务器地址 | 占位 | `https://TODO.example.com/remote` | `AppConfig.REMOTE_SERVER`<br>`builder.json` → `wechatgame.remoteServerAddress` | ✅ |
 | 分包配置 | 占位 | `"subpackages": []` | `builder.json` → `wechatgame.subpackages`<br>`build-templates/wechatgame/game.json` → `subpackages` | ✅（空数组占位） |
 

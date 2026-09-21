@@ -58,11 +58,13 @@ export class LobbyScene extends Component {
         const userName = user ? user.nickname : '未登录';
         setLabelText(this.node, 'Canvas/Header/HeaderUser', `👤 ${userName}`);
 
-        // 底部说明
+        // 底部说明：数据来源随运行模式变化。
+        // 原先写死「数据来源：Mock 通道」，切到真机（USE_MOCK=false）后就成了误导。
+        const dataSource = AppConfig.USE_MOCK ? 'Mock 通道' : '微信云开发';
         setLabelText(
             this.node,
             'Canvas/Footer',
-            'MVP：寻机头 · 五子棋  |  数据来源：Mock 通道',
+            `MVP：寻机头 · 五子棋  |  数据来源：${dataSource}`,
         );
 
         const games = getSortedGameList();

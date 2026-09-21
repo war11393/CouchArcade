@@ -24,6 +24,7 @@ import {
 // ---------- Mock 实现 ----------
 import { MockAuthService } from './services/mock/MockAuthService';
 import { MockCloudService } from './services/mock/MockCloudService';
+import { installMockCloudHandlers } from './services/mock/MockCloudHandlers';
 import { MockNetSyncService } from './services/mock/MockNetSyncService';
 import { MockPlatformService } from './services/mock/MockPlatformService';
 import { MockRoomService } from './services/mock/MockRoomService';
@@ -103,10 +104,21 @@ class ServiceLocatorImpl implements ServiceContainer {
             this._storage = new MockStorageService();
             this._platform = new MockPlatformService();
             this._auth = new MockAuthService(this._storage);
-            this._cloud = new MockCloudService();
+            const mockCloud = new MockCloudService();
+            this._cloud = mockCloud;
             this._share = new MockShareService();
             this._netSync = new MockNetSyncService();
             this._room = new MockRoomService(this._auth, this._cloud, this._netSync);
+
+            // 安装 Mock 云函数处理器（settleGame / login）。
+            //
+            // 必须在这里安装：原实现由 AppBootstrap.onLoad 调用，但该组件
+            // 从未被挂到任何场景（见 AppBootstrap 顶部说明），注册从未发生过 ——
+            // 战绩写入链路（StatsService → cloud.callFunction('settleGame')）
+            // 因此一直是断的（MockCloudService 找不到处理器，只返回空对象）。
+            // 这里与 MockRoomService 在构造函数内注册房间处理器的做法一致：
+            // 谁提供 Mock 实现，谁负责把对应的「模拟服务端逻辑」装好。
+            installMockCloudHandlers(mockCloud);
         } else {
             console.log('[ServiceLocator] 注入 Wx 实现（真机模式）');
             // 依赖顺序：storage → cloud → （auth 依赖 cloud+storage）→ 其余

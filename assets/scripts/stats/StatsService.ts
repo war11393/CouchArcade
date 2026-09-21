@@ -3,12 +3,17 @@
  *
  * Mock 阶段：写入内存集合并打印日志（规格要求）。
  * 第二阶段：云函数 settleGame 写入 match_records 集合。
+ *
+ * ⚠️ Mock 云函数处理器（settleGame / login）的**注册不在本文件** ——
+ * 已迁至 `core/services/mock/MockCloudHandlers.ts`，由 `ServiceLocator.init()` 调用。
+ * 原因：本文件 import 了 ServiceLocator，若 ServiceLocator 反向 import 本文件
+ * 会形成循环依赖；而旧实现把注册挂在 `AppBootstrap.onLoad` 上（该组件从未被挂到
+ * 任何场景）→ 注册从未发生，战绩链路一直是断的。详见该文件顶部说明。
  */
 
 import { COLLECTIONS, CLOUD_FUNCTIONS } from '../config/Collections';
 import { GameId } from '../config/GameList';
 import { GameResult } from '../games/common/IGame';
-import { MockCloudService } from '../core/services/mock/MockCloudService';
 import { services } from '../core/ServiceLocator';
 
 /** 战绩记录结构（与 match_records 集合设计一致）。 */
@@ -73,39 +78,6 @@ export async function saveMatchRecord(
         JSON.stringify(record, null, 2),
     );
     return id || '';
-}
-
-/**
- * 注册 Mock 云函数处理器（仅 Mock 模式生效）。
- *
- * 目的：让「写战绩」这条云函数调用链在第一阶段就跑通，
- * 第二阶段部署真实云函数后无需修改调用方代码。
- */
-export function registerCloudHandlers(): void {
-    MockCloudService.registerHandler(CLOUD_FUNCTIONS.SETTLE_GAME, (data) => {
-        // 模拟服务端落库：写入 match_records 集合
-        const svc = _mockCloudRef;
-        if (svc) {
-            void svc.addDocument(COLLECTIONS.MATCH_RECORDS, data);
-        }
-        console.log('[MockCloud] settleGame 处理器：战绩已落库');
-        return `${COLLECTIONS.MATCH_RECORDS}_mock`;
-    });
-
-    MockCloudService.registerHandler(CLOUD_FUNCTIONS.LOGIN, (data) => {
-        // 模拟 login 云函数返回 openid
-        const d = data as { code?: string } | undefined;
-        void d;
-        return { openid: 'mock-openid-0001', ok: true };
-    });
-
-    console.log('[StatsService] Mock 云函数处理器注册完成');
-}
-
-/** 延迟绑定 MockCloudService 引用（避免循环依赖）。 */
-let _mockCloudRef: MockCloudService | null = null;
-export function bindMockCloud(svc: MockCloudService): void {
-    _mockCloudRef = svc;
 }
 
 /**
