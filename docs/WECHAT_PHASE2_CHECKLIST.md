@@ -42,6 +42,52 @@
 - [ ] 项目类型选 **小游戏**，AppID 填 `wxd5cc731e7273d122`
 - [ ] 确认编译无报错（若报 `game.json` 相关错误，见文末「常见问题」）
 
+> ⚠️ **务必核对 AppID**：打开 `详情 → 基本信息`，确认 AppID 是 `wxd5cc731e7273d122`。
+> 若显示 `wx6ac3f5090a6b99c5`（Cocos 默认示例 appid），说明构建时 appid 被覆盖了，
+> 见下方「appid 有四个来源」。
+
+### 1.1 appid 有四个来源，改一处不够（踩过一次）
+
+Cocos 构建会按优先级合并以下来源，**后者覆盖前者**：
+
+| 顺序 | 文件 | 是否入库 | 说明 |
+| :--- | :--- | :--- | :--- |
+| 1 | `settings/v2/packages/builder.json` | ✅ 已跟踪 | 项目级默认值（2 处） |
+| 2 | `build-templates/wechatgame/project.config.json` | ✅ 已跟踪 | 构建模板，覆盖到产物 |
+| 3 | **`profiles/v2/packages/wechatgame.json`** | ❌ **gitignored（本机）** | **用户级 profile，优先级最高** |
+| 4 | `build/wechatgame/project.config.json` | ❌ gitignored | 最终产物 |
+
+> 🔴 **第 3 项是隐形杀手**：它在 `.gitignore` 里（`profiles/`），不进版本库，
+> 所以「仓库里看起来全改对了」但本机构建仍用旧 appid。
+> 本项目首次构建就踩了这个坑 —— 产物里是 Cocos 默认的 `wx6ac3f5090a6b99c5`，
+> 直接导致云环境列表同步失败（`ret: -80002`）。
+>
+> **改 appid 时三处同改**（第 1、2、3 项），然后重新构建。
+
+---
+
+## 阶段 1.5：首次打开就报错的排查（常见假故障）
+
+刚导入项目时 DevTools 常刷出一串报错，**多数与你的代码无关**。逐条对照：
+
+| 报错 | 性质 | 处理 |
+| :--- | :--- | :--- |
+| `[同步云环境列表] Base resp abnormal, {"ret":-80002}` | **真实问题** | appid 不对（见 §1.1）。改完**必须关闭项目重新导入**，DevTools 会缓存 appid |
+| `app.json 中未定义自定义编译中指定的启动页面` | 工具残留状态 | 点「编译」旁的**编译模式下拉 → 选「普通编译」**。小游戏没有 app.json/pages，此错来自 DevTools 残留的小程序编译条件 |
+| `[jsbridge] invoke getSystemInfo fail: jsbridge not ready` | 工具/引擎启动竞态 | 栈全在 `WAGame.js` 内（引擎启动读 deviceOrientation），**非你的代码**。清缓存后重新编译即可 |
+| `Object.defineProperty called on non-object at ...xmldom/dom-parser (web-adapter.js)` | **基础库不兼容** | `web-adapter.js` 是 Cocos 引擎自带文件，其内置 xmldom polyfill 在灰度基础库下解析失败。**换掉灰度基础库**（见下） |
+| `正在使用灰度中的基础库 3.17.3 进行调试` | 微信自己的警告 | 灰度库不稳定，微信明确提示「如有问题请更改基础库版本」 |
+
+- [ ] 已确认 AppID = `wxd5cc731e7273d122`
+- [ ] 编译模式已设为「普通编译」
+- [ ] `详情 → 本地设置 → 调试基础库` 已**取消灰度版本**，改选一个正式版
+- [ ] `工具 → 清除缓存 → 全部清除`，然后重新编译
+- [ ] 若 appid 刚改过：**关闭项目 → 重新导入**（DevTools 缓存 appid，不重开不生效）
+
+> 判断「是不是我的代码」的快捷方法：看报错栈里有没有 `assets/main/index.js`
+> （Cocos 打包后的我们的代码）。栈全在 `WAGame.js` / `WAGameSubContext.js` /
+> `web-adapter.js` 里 → 属于工具或引擎层。
+
 ---
 
 ## 阶段 2：云开发环境
@@ -182,6 +228,9 @@
 | 现象 | 根因 | 处理 |
 | :--- | :--- | :--- |
 | `game.json: ["workers"] 不能为 ''` | 构建模板有空字符串字段 | 已修复（提交 `cada124`），若复发检查 `build-templates/wechatgame/game.json` |
+| **`同步云环境列表 ret: -80002`** | **appid 被 `profiles/` 覆盖成 Cocos 默认值** | 见 §1.1，三处同改 appid 后**重新导入项目** |
+| **`app.json 中未定义自定义编译中指定的启动页面`** | DevTools 残留的小程序编译条件 | 编译模式下拉 → 选「普通编译」 |
+| **`jsbridge not ready` / `xmldom dom-parser` 报错** | 灰度基础库与 Cocos 适配层不兼容 | 换掉灰度基础库 + 清缓存重新编译 |
 | `cloud init failed` | 环境 ID 错 / 未最早调用 init | 核对 `AppConfig.CLOUD_ENV` = `cloud1-d7gp1em2efcf2b05b` |
 | `callFunction` 报 `-404011` | 云函数未部署或名称不符 | 确认 9 个函数都上传且名字一致 |
 | **界面不刷新但无报错** | 集合权限未设「所有用户可读」 | **回阶段 3.1 检查 5 个集合权限** |
@@ -211,10 +260,16 @@
 1. **先看控制台日志的关键前缀**：
    `[WxCloudService]` / `[WxAuth]` / `[WxRoom]` / `[WxNetSync]` / `[LoadingScene]`
    —— 每个都带明确上下文，能直接定位到哪个服务出问题。
+   **若报错栈里没有这些前缀、也没有 `assets/main/index.js`，说明是工具/引擎层问题，不是代码问题。**
 
 2. **再查云开发控制台**：
    - 云函数 → 日志：看服务端有没有被调用、返什么错误码
    - 数据库 → 对应集合：看文档有没有按预期写入
 
-3. **最后按「集合权限 → 云函数部署 → 索引」顺序复核配置**
-   （这三类是「代码全对但功能不通」的绝大多数原因）
+3. **最后按优先级复核配置**（这三类是「代码全对但功能不通」的绝大多数原因）：
+   `AppID 正确` → `集合权限` → `云函数部署` → `索引` → `调试基础库非灰度`
+
+> 💡 三个最容易白费半天的坑，按此顺序排除：
+> ① **AppID 被 `profiles/` 覆盖**（`.gitignore` 里，改仓库看不出来）
+> ② **集合权限没设「所有用户可读」**（watch 静默失败，无任何报错）
+> ③ **用了灰度基础库**（引擎适配层解析失败，报错全是工具内部的）
