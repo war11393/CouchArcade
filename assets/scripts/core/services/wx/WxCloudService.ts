@@ -27,7 +27,11 @@ interface CloudEnvelope<T> {
 /** wx.cloud.callFunction 的包装结果。 */
 interface CallFunctionEnvelope<T> {
     /** 云函数返回的信封。 */
-    result?: CloudEnvelope<T>;
+    result?: CloudEnvelope<T> & {
+        /** 函数未部署/调用异常时，wx 会把这些塞进 result 并 resolve（而非 reject）。 */
+        errCode?: number;
+        errMsg?: string;
+    };
     errMsg?: string;
 }
 
@@ -112,6 +116,29 @@ export class WxCloudService implements ICloudService {
             throw new CloudError(
                 ERR.BAD_RESPONSE,
                 `[WxCloudService] callFunction(${name}) 返回体为空: ${res?.errMsg ?? 'no result'}`,
+            );
+        }
+
+        // 形状校验：业务云函数必须返回 { code, success, data }
+        // （见 cloudfunctions/common/index.js 的 ok/fail）。
+        //
+        // 为什么要专门校验形状：**当函数未部署时**，wx 不会 reject，而是把
+        // { errCode, errMsg } 塞进 result 并 resolve。此时 success/code 都不存在，
+        // 若只按 success===false 判失败就会漏判，然后 `envelope.data ?? null`
+        // 把错误信息静默吞成 null —— 调用方（如 WxAuth 判 openid）只会报出
+        // 「返回缺少 openid」这类**误导性**错误，真正原因（未部署）被掩盖。
+        // 此处显式暴露原始返回，让问题一眼可见。
+        const shaped = typeof envelope.code === 'number' || typeof envelope.success === 'boolean';
+        if (!shaped) {
+            const errCode = (envelope as { errCode?: number }).errCode;
+            const hint =
+                errCode === -404011 || errCode === -501000
+                    ? `（疑似云函数「${name}」未部署：请在微信开发者工具中右键 cloudfunctions/${name} → 上传并部署：云端安装依赖）`
+                    : '';
+            throw new CloudError(
+                ERR.BAD_RESPONSE,
+                `[WxCloudService] callFunction(${name}) 返回体形状不符，期望 {code,success,data}${hint}。` +
+                    `errCode=${errCode ?? '无'} errMsg=${envelope.errMsg ?? '无'} 原始返回=${JSON.stringify(res).slice(0, 300)}`,
             );
         }
 

@@ -10,6 +10,7 @@
  */
 
 import { AppConfig } from '../config/AppConfig';
+import { registerAppHooks } from './AppHooks';
 import {
     IAuthService,
     ICloudService,
@@ -185,4 +186,12 @@ export function ensureServices(): void {
     }
     // cloud.init() 也是幂等的（Mock 为内存 Map），确保云服务可用
     services.cloud.init();
+    // 注册应用级钩子（热启动 / 网络恢复 → 断线重连）。
+    //
+    // 放在这里的原因：本项目场景由 tools/ui-trees.js 静态生成，每个场景根节点
+    // 只挂一个控制器脚本（见 tools/gen-scenes.js 的 SCENES 表），AppBootstrap
+    // 并不在其中 —— 它的 onLoad 永不执行，写在里面的注册都是死代码。
+    // ensureServices() 被每个场景 onLoad 首先调用，是项目约定的「保证执行」入口；
+    // registerAppHooks() 内部幂等，且位于模块作用域（不随场景销毁失效）。
+    registerAppHooks(services);
 }

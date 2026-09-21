@@ -33,7 +33,7 @@
 
 import { _decorator, Component, Node, ProgressBar, UITransform, Vec3, game, view } from 'cc';
 import { AppConfig, AiLevel } from '../config/AppConfig';
-import { GameId } from '../config/GameList';
+import { parseRoomLaunchQuery } from '../core/AppHooks';
 import { services, ensureServices } from '../core/ServiceLocator';
 import { uiManager } from '../core/UIManager';
 import { findNode, requireNode, setLabelText, labelAt } from '../core/UIFactory';
@@ -65,15 +65,9 @@ export class LoadingScene extends Component {
     /** 更新管理器回调是否已注册（避免重复注册）。 */
     private _updateHooked = false;
 
-    /** 是否已注册热启动（onShow）监听，保证只注册一次。 */
-    private _showHooked = false;
-    /** 热启动监听的取消函数。 */
-    private _unsubscribeShow: (() => void) | null = null;
-    /** 启动流程是否已完成（热启动回调需等启动完成后再处理切房）。 */
-    private _booted = false;
-
     protected async onLoad(): Promise<void> {
-        // 服务兜底：确保 ServiceLocator 已注入（AppBootstrap 正常挂载时此处为空操作）
+        // 服务兜底：确保 ServiceLocator 已注入，并注册应用级钩子
+        // （热启动 / 网络恢复 → 断线重连，见 core/AppHooks.ts）
         ensureServices();
 
         this._bindNodes();
@@ -93,15 +87,10 @@ export class LoadingScene extends Component {
 
     protected onDestroy(): void {
         this.unschedule(this._checkStuck);
-        // 释放 onShow 监听，避免场景销毁后仍持有回调（热重载时会造成重复触发）
-        if (this._unsubscribeShow) {
-            try {
-                this._unsubscribeShow();
-            } catch (err) {
-                console.warn('[LoadingScene] 取消热启动监听失败:', err);
-            }
-            this._unsubscribeShow = null;
-        }
+        // 注意：热启动（onShow）监听**不在此处注销**。
+        // 它由 core/AppHooks.ts 在模块作用域注册，生命周期与整个小游戏一致 ——
+        // 若绑定到本场景，gotoLobby/gotoRoom 销毁 Loading 场景后监听就会失效，
+        // 导致「后台时点分享卡片」不再生效（这是一个已修的旧问题）。
     }
 
     /** 绑定静态场景里的节点（缺失只告警不抛错，避免个别节点问题导致整页不可用）。 */
@@ -183,18 +172,15 @@ export class LoadingScene extends Component {
                 await this._delay(60);
             });
 
-            // ---- 阶段 5.5：注册热启动监听（分享卡片二次进入） ----
-            // 必须在读完冷启动参数前注册：App 已在后台时 getLaunchOptionsSync
-            // 不会更新，只能靠 onShow 拿到新的 query。
-            this._hookShowListener();
-
             // ---- 完成：读取启动参数（分享卡片直进房间） ----
             this._setProgress(1, `欢迎，${nickname || '玩家'}`);
             await this._delay(300);
 
+            // 冷启动直达：首屏只处理冷启动参数。
+            // 热启动（后台时点新卡片）由 core/AppHooks.ts 的 onShow 监听统一处理 ——
+            // 放在那里是刻意的：本场景会被销毁，而 onShow 能力必须贯穿全程。
             const launch = services.platform.getLaunchOptions();
-            this._booted = true;
-            this._handleLaunchOptions(launch, 'cold');
+            this._handleColdStart(launch);
         } catch (err) {
             console.error('[LoadingScene] 启动失败:', err);
             this._setProgress(this._progress, `启动失败：${(err as Error).message}`);
@@ -205,71 +191,31 @@ export class LoadingScene extends Component {
     }
 
     /**
-     * 处理启动参数：命中 roomId + gameId 则直进房间，否则进大厅。
+     * 处理**冷启动**参数：命中 roomId + gameId 则直进房间，否则进大厅。
      *
-     * @param source 'cold' = 冷启动（Loading 阶段），'hot' = 热启动（切回前台/新卡片）
+     * 解析与校验复用 core/AppHooks.ts 的 parseRoomLaunchQuery，
+     * 保证冷/热启动两条路径的规则完全一致（避免一处改了另一处漏改）。
+     *
+     * 热启动分支不在这里：见 AppHooks.handleHotStart（onShow）。
      */
-    private _handleLaunchOptions(launch: LaunchOptions, source: 'cold' | 'hot'): void {
-        const roomId = launch.query['roomId'];
-        const gameId = launch.query['gameId'] as GameId | undefined;
+    private _handleColdStart(launch: LaunchOptions): void {
+        const target = parseRoomLaunchQuery(launch.query);
 
-        if (!roomId || !gameId) {
-            if (source === 'cold') {
-                uiManager.gotoLobby();
-            }
-            // 热启动且无房间参数：用户只是切回前台，保持当前界面不动
-            return;
-        }
-
-        // query 中的值全部是字符串，此处按字符串校验（与 joinRoom 的约定一致）
-        if (!/^\d{6}$/.test(roomId)) {
-            console.warn(`[LoadingScene] 启动参数 roomId 非法（非 6 位数字）：${roomId}`);
-            if (source === 'cold') {
-                uiManager.gotoLobby();
-            }
+        if (!target) {
+            // 无有效房间参数（或参数非法，解析函数已打日志）：进大厅
+            uiManager.gotoLobby();
             return;
         }
 
         console.log(
-            `[LoadingScene] 检测到分享直达参数（${source === 'cold' ? '冷启动' : '热启动'}）：` +
-                `roomId=${roomId} gameId=${gameId}`,
+            `[LoadingScene] 冷启动检测到分享直达：roomId=${target.roomId} gameId=${target.gameId}`,
         );
         uiManager.gotoRoom({
-            gameId,
+            gameId: target.gameId,
             mode: 'pvp',
             aiLevel: AiLevel.NORMAL,
-            joinRoomId: roomId,
+            joinRoomId: target.roomId,
         });
-    }
-
-    /**
-     * 注册热启动监听。
-     *
-     * 为什么必须做：`wx.getLaunchOptionsSync()` 只在**冷启动**时反映参数。
-     * App 已在后台时，用户点击另一张分享卡片不会更新它 ——
-     * 这是分享直达房间最常见的线上问题（点了卡片却停在大厅）。
-     *
-     * 幂等：重复调用只注册一次。
-     */
-    private _hookShowListener(): void {
-        if (this._showHooked) return;
-        this._showHooked = true;
-
-        const platform = services.platform;
-        if (typeof platform.subscribeShow !== 'function') {
-            console.warn('[LoadingScene] 平台服务未实现 subscribeShow，热启动分享直达不可用');
-            return;
-        }
-
-        this._unsubscribeShow = platform.subscribeShow((options) => {
-            // 热启动时只在「已有房间参数且当前在大厅」时切房，
-            // 避免用户正在对局中被切走。
-            if (!this._booted) {
-                return;
-            }
-            this._handleLaunchOptions(options, 'hot');
-        });
-        console.log('[LoadingScene] 已注册热启动监听（onShow）');
     }
 
     /**
