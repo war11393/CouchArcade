@@ -1,5 +1,5 @@
 {
-  "description": "微信开发者工具项目配置（仓库根）。\n\n为什么要放在仓库根，而不是直接打开 build/wechatgame/：\n云函数的「上传并部署」要求 DevTools 在项目目录内看到 cloudfunctions/，\n但 cloudfunctions/ 在仓库根、与构建产物 build/wechatgame/ 平级 —— 直接打开\nbuild/wechatgame/ 时 DevTools 看不到云函数（没有云图标、无法右键部署）。\n\n本文件用两个字段把两边接起来：\n  miniprogramRoot -> 构建产物（游戏本体）\n  cloudfunctionRoot -> 云函数源码\n\n为什么不用「把 cloudfunctions/ 拷进 build/wechatgame/」的方案：\nbuild/ 是 Cocos 构建产物（已 gitignore），每次构建先清空再写入，\n拷进去的云函数会随每次重建消失 —— 需要反复手动重拷。\n本文件在仓库根，不受构建影响，一次配置长期有效。",
+  "description": "微信开发者工具项目配置（仓库根）。\n\n为什么要放在仓库根，而不是直接打开 build/wechatgame/：\n云函数的「上传并部署」要求 DevTools 在项目目录内看到 cloudfunctions/，\n但 cloudfunctions/ 在仓库根、与构建产物 build/wechatgame/ 平级 —— 直接打开\nbuild/wechatgame/ 时 DevTools 看不到云函数（没有云图标、无法右键部署）。\n本文件用两个字段把两边接起来：\n  miniprogramRoot  -> 构建产物（游戏本体）\n  cloudfunctionRoot -> 云函数源码\n\n⚠️⚠️ packOptions.ignore 必须留空 —— 踩过的坑，别再加回来 ⚠️⚠️\n本次曾在此处加了 \"assets\" 想排除 Cocos 源资源目录，结果游戏直接起不来：\n  Error: module 'assets/internal/index.js' is not defined\n原因：WeChat 解析 packOptions.ignore 时是**相对于 miniprogramRoot**（代码根），\n而不是相对于项目根。于是 \"assets\" 命中的是 build/wechatgame/assets/ ——\n那正是游戏的两个资源包（internal / main）所在处，被排除后 cc.js 无法\nrequire 到 internal 包，引擎初始化即失败。\n\n结论：miniprogramRoot 已经把打包范围限制在 build/wechatgame/ 内，\n仓库根的其他目录本来就不会进包，**无需任何 ignore**。保持为空最安全。",
   "miniprogramRoot": "build/wechatgame/",
   "cloudfunctionRoot": "cloudfunctions/",
   "compileType": "game",
@@ -29,36 +29,7 @@
   },
   "condition": {},
   "packOptions": {
-    "ignore": [
-      {
-        "type": "folder",
-        "value": "cloudfunctions"
-      },
-      {
-        "type": "folder",
-        "value": "docs"
-      },
-      {
-        "type": "folder",
-        "value": "tools"
-      },
-      {
-        "type": "folder",
-        "value": "assets"
-      },
-      {
-        "type": "folder",
-        "value": "settings"
-      },
-      {
-        "type": "folder",
-        "value": "library"
-      },
-      {
-        "type": "folder",
-        "value": "temp"
-      }
-    ],
+    "ignore": [],
     "include": []
   }
 }
