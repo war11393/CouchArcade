@@ -74,14 +74,30 @@ function init() {
  * 统一成功响应。
  *
  * 注意：云函数返回值必须可 JSON 序列化，且单次上限 1MB。
+ *
+ * ⚠️ `__isResponse` 标记不可删 —— 它是「已包装」的凭据。
+ * wrap() 拿到 handler 返回值时会判 `result.__isResponse`：
+ * 有标记 → 原样返回；无标记 → 再包一层 ok()。
+ * 本函数必须自己打上该标记，否则 handler 里 `return ok(x)` 会被
+ * wrap() 再包一次，客户端收到 {code,success,data:{code,success,data:x}}，
+ * 于是 WxCloudService 解包后拿到的是内层信封而非业务数据，
+ * 表现为「login 返回缺少 openid」并把调用方卡在加载页。
+ * 历史：2026-09-22 真机踩到，见 docs/FIX_LOADING_STUCK.md。
  */
 function ok(data, extra) {
-    return Object.assign({ code: ERR.OK, success: true, data: data === undefined ? null : data }, extra || {});
+    return Object.assign(
+        { code: ERR.OK, success: true, data: data === undefined ? null : data, __isResponse: true },
+        extra || {},
+    );
 }
 
-/** 统一失败响应（不抛异常，避免客户端拿到难解析的错误堆栈）。 */
+/**
+ * 统一失败响应（不抛异常，避免客户端拿到难解析的错误堆栈）。
+ *
+ * 同 ok()：必须带 `__isResponse`，否则被 wrap() 二次包装。
+ */
 function fail(code, message) {
-    return { code, success: false, message: message || '操作失败' };
+    return { code, success: false, message: message || '操作失败', __isResponse: true };
 }
 
 /** 业务异常：在 handler 内 throw new BizError(ERR.xxx, '...') 会被包装成 fail 响应。 */

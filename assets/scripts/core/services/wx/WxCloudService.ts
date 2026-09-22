@@ -142,6 +142,32 @@ export class WxCloudService implements ICloudService {
             );
         }
 
+        // 双重包装自检（2026-09-22 真机事故的回归防线）。
+        //
+        // 云函数 handler 里 `return ok(x)`，而 wrap() 若无条件再包一层，
+        // 客户端就会收到 {code,success,data:{code,success,data:x}} ——
+        // 内层才是真业务数据。此时所有 `data.xxx` 取值全为 undefined，
+        // 调用方（如 WxAuth 判 openid）只会报「返回缺少 openid」，
+        // 真正原因（云函数信封重复包装）被完全掩盖，极难定位。
+        //
+        // 这里显式识别该形状并把根因说清楚，避免下一次再花一轮排查。
+        // 根因已在 cloudfunctions/common/index.js 的 ok()/fail() 修掉
+        // （补 `__isResponse` 标记），本检查是防止它被改回去的哨兵。
+        if (
+            envelope.data !== null &&
+            typeof envelope.data === 'object' &&
+            typeof (envelope.data as { code?: unknown }).code === 'number' &&
+            typeof (envelope.data as { success?: unknown }).success === 'boolean'
+        ) {
+            throw new CloudError(
+                ERR.BAD_RESPONSE,
+                `[WxCloudService] callFunction(${name}) 返回体被**双重包装**：外层信封的 data 里又是一个信封。` +
+                    '根因是云函数 common.js 的 ok()/fail() 缺少 `__isResponse` 标记，被 wrap() 二次包装。' +
+                    '请检查 cloudfunctions/common/index.js（并同步到各云函数目录的 common.js）后重新部署。' +
+                    `原始返回=${JSON.stringify(res).slice(0, 300)}`,
+            );
+        }
+
         if (envelope.success === false || (envelope.code !== undefined && envelope.code !== ERR.OK)) {
             throw new CloudError(
                 envelope.code ?? ERR.UNKNOWN,

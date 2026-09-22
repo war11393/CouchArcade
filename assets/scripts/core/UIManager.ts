@@ -136,15 +136,20 @@ export class UIManager {
 
     private _load(scene: SceneName): void {
         const cur = director.getScene();
+
+        // 幂等：已经在目标场景里就什么都不做。
+        // 真实场景：LoadingScene 降级放行（_degradeToLobby）与冷启动直达是
+        // 两条并行路径，若都跑到 gotoLobby，第二次 loadScene 会把刚建好的
+        // 大厅整个拆掉重建 —— 表现为「大厅闪一下又回到加载画面」。
+        if (cur && cur.name === scene) {
+            console.log(`[UIManager] 已在场景 ${scene}，跳过重复切换`);
+            return;
+        }
+
         console.log(
             `[UIManager] 切换场景 → ${scene}（当前场景=${cur ? cur.name : 'null'}）`,
         );
-        if (scene === SCENES.LOADING) {
-            // Loading 场景重新加载时用重新启动，避免状态残留
-            director.loadScene(scene);
-        } else {
-            director.loadScene(scene);
-        }
+        director.loadScene(scene);
     }
 
     // ==================== Toast ====================

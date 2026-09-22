@@ -31,7 +31,7 @@
  *   · 版本更新提示也发生在进入业务逻辑之前，只能落在这里。
  */
 
-import { _decorator, Component, Node, ProgressBar, UITransform, Vec3, game, view } from 'cc';
+import { _decorator, Component, Node, ProgressBar, UITransform, Vec3, assetManager, game, view } from 'cc';
 import { AppConfig, AiLevel } from '../config/AppConfig';
 import { parseRoomLaunchQuery, onUpdateStateChange } from '../core/AppHooks';
 import { services, ensureServices } from '../core/ServiceLocator';
@@ -170,7 +170,6 @@ export class LoadingScene extends Component {
                 nickname = user.nickname;
                 console.log(`[LoadingScene] 登录完成：${user.nickname} (${user.openid})`);
             });
-
             // ---- 阶段 4：云开发初始化（Mock 内存 Map；幂等） ----
             await this._stage('正在初始化云服务…', STAGE_WEIGHT.CLOUD, async () => {
                 services.cloud.init();
@@ -193,12 +192,41 @@ export class LoadingScene extends Component {
             const launch = services.platform.getLaunchOptions();
             this._handleColdStart(launch);
         } catch (err) {
+            // 走到这里说明**核心链路**失败（登录已自带三级兜底，正常不会抛）。
+            //
+            // 关键取舍：**不再卡在加载页**。原先只是把「启动失败：xxx」写进 Status
+            // 就停住 —— 用户看到的就是一个永远停在加载页、只有一行字的死界面，
+            // 既进不了大厅也看不出能做什么。现在改为降级放行：进大厅（单机可玩），
+            // 并用 Toast 明确告知异常，把「能不能玩」与「服务端是否正常」解耦。
             console.error('[LoadingScene] 启动失败:', err);
-            this._setProgress(this._progress, `启动失败：${(err as Error).message}`);
-            setLabelText(this.node, 'Canvas/Hint', '点击重试');
-            // 失败不做静默停留：给一个可点的重试路径
-            this._bindRetry();
+            this._degradeToLobby(err);
         }
+    }
+
+    /**
+     * 启动失败时的降级放行：提示 + 进大厅。
+     *
+     * 为什么不留在加载页重试：加载页的重试按钮是「同一个必失败的动作再来一次」，
+     * 用户点几次就放弃了。进大厅后单机（AI 练习）与本地缓存功能都可用，
+     * 用户至少能玩到东西 —— 这才是失败的合理下限。
+     */
+    private _degradeToLobby(err: unknown): void {
+        const msg = err instanceof Error ? err.message : String(err);
+        this._setProgress(this._progress, '启动异常，已进入离线模式');
+        setLabelText(this.node, 'Canvas/Hint', '启动异常（详见控制台）');
+
+        // Toast 走 UIManager 的运行时浮层（静态场景里没有 Toast 节点）；
+        // 失败也不该反过来影响跳转，单独 try 住。
+        try {
+            uiManager.toast(`启动异常：${msg}`, undefined);
+        } catch (e) {
+            console.warn('[LoadingScene] 降级提示显示失败（忽略）:', e);
+        }
+
+        // 留一小段时间让用户看见状态文案，再进大厅
+        this.scheduleOnce(() => {
+            uiManager.gotoLobby();
+        }, 0.8);
     }
 
     /**
@@ -232,17 +260,73 @@ export class LoadingScene extends Component {
     /**
      * 资源预加载。
      *
-     * 当前项目零外部美术资源（UI 全程序化绘制），所以这里主要是
-     * 「把首帧要用到的场景/字体准备好」。真实资源接入后，
-     * 把 bundle/图片路径填进 ASSETS 即可，进度会真实反映加载比例。
+     * 当前项目零外部美术资源（UI 全程序化绘制），所以这里加载的是
+     * **首帧要用到的内置资源**：引擎内置资源包 `internal` + 游戏资源包 `main`。
+     *
+     * 为什么要真加载而不是「延时凑进度」：两个资源包是分包，第一次用到才下载，
+     * 而「第一次用到」的地方正是 Lobby —— 用户会看到大厅的 Label/Graphics
+     * 一部分先出现、一部分后出现（闪一下）。在加载页把它们提前拉完，
+     * 大厅首帧就是完整的，且进度条反映的是真实 IO。
+     *
+     * 失败不阻断：预加载只是优化，拉不到就让 Lobby 自己去加载（各自 bundle 内部
+     * 已有加载逻辑），绝不能让优化手段变成新的卡死点。
      */
     private async _preload(): Promise<void> {
-        // TODO(art-phase): 有美术资源后改为 resources.loadDir 并接 onProgress
-        const steps = 8;
-        for (let i = 1; i <= steps; i++) {
-            await this._delay(45);
-            // 让进度条在「资源阶段」内部也平滑推进
-            this._advance(STAGE_WEIGHT.RESOURCE * (i / steps));
+        const withTimeout = <T>(p: Promise<T>, ms: number, what: string): Promise<T | null> =>
+            new Promise<T | null>((resolve) => {
+                let done = false;
+                const timer = setTimeout(() => {
+                    if (!done) {
+                        done = true;
+                        console.warn(`[LoadingScene] 预加载 ${what} 超时 ${ms}ms，跳过（交由业务自己加载）`);
+                        resolve(null);
+                    }
+                }, ms);
+                p.then((v) => {
+                    if (!done) {
+                        done = true;
+                        clearTimeout(timer);
+                        resolve(v);
+                    }
+                }).catch((err) => {
+                    if (!done) {
+                        done = true;
+                        clearTimeout(timer);
+                        console.warn(`[LoadingScene] 预加载 ${what} 失败（忽略）:`, err);
+                        resolve(null);
+                    }
+                });
+            });
+
+        const names = ['internal', 'main'];
+        for (let i = 0; i < names.length; i++) {
+            const name = names[i];
+            try {
+                const bundle = assetManager.getBundle(name);
+                if (!bundle) {
+                    // 未随构建产出的包（例如被裁剪）→ 跳过，不算失败
+                    continue;
+                }
+                // preload([]) 只拉资源清单与首帧资源（不解析），
+                // 场景里正常 load() 时即可直接命中缓存。
+                // 注意：AssetBundle.preload 是回调式 API，不是 Promise，
+                // 这里手工包一层，超时兜底交给 withTimeout。
+                await withTimeout(
+                    new Promise<void>((resolve) => {
+                        bundle.preload([], (err) => {
+                            if (err) {
+                                console.warn(`[LoadingScene] bundle:${name} 预加载返回错误（忽略）:`, err);
+                            }
+                            resolve();
+                        });
+                    }),
+                    4000,
+                    `bundle:${name}`,
+                );
+            } catch (err) {
+                console.warn(`[LoadingScene] 预加载 bundle:${name} 异常（忽略）:`, err);
+            }
+            this._advance(STAGE_WEIGHT.RESOURCE * ((i + 1) / names.length));
         }
     }
 
@@ -283,7 +367,15 @@ export class LoadingScene extends Component {
         });
     }
 
-    /** 启动失败时给一个可点重试（避免用户卡在加载页无处可去）。 */
+    /**
+     * 启动失败时给一个可点重试（避免用户卡在加载页无处可去）。
+     *
+     * 注意：这条路径现在**只服务于「真到了加载页且核心链路抛错」的极端情况**。
+     * WxAuthService 已带三级兜底（不抛错），所以正常不会走到这里；
+     * _degradeToLobby 才是登录失败的主路径（直接放行进大厅）。
+     * 保留此方法是为了兜住「连降级本身都失败」的残余可能性，
+     * 且重试是幂等的（_started 复位后重跑 _boot）。
+     */
     private _bindRetry(): void {
         const hint = findNode(this.node, 'Canvas/Hint');
         if (!hint) return;

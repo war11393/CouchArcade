@@ -23,6 +23,9 @@ interface LoginResult {
     drawCount?: number;
 }
 
+/** 本地会话的 id 前缀 —— 一眼能认出「这不是云端下发的真 openid」。 */
+const LOCAL_ID_PREFIX = 'local_';
+
 export class WxAuthService implements IAuthService {
     private _user: UserInfo | null = null;
     private readonly _cloud: ICloudService;
@@ -41,12 +44,25 @@ export class WxAuthService implements IAuthService {
      *   2. 调云函数 login 换取权威 openid（服务端 upsert users 集合）；
      *   3. 回写缓存。
      *
-     * 兜底策略：云函数失败时**不抛错**，而是回落到缓存用户；
-     * 缓存也没有才抛出 —— 保证「网络抖动」不会直接卡死在 Loading。
-     * 但会打 warn 日志，便于排查。
+     * 兜底策略（**本方法不抛错**，三级递进）：
+     *   ① 云函数失败但缓存里有云端 openid → 用缓存（网络抖动不影响开局）；
+     *   ② 缓存也没有 / 缓存本身就是本地会话 → 造本地会话（`local_` 前缀）；
+     *   ③ 上一轮已降级的本地会话 → 直接复用，不再等一次必失败的云调用。
+     *
+     * 唯一目的是：**登录失败绝不能让用户卡死在加载页**。云端登录挂了，
+     * 用户至少要能进大厅玩单机（AI 练习）；联机功能失败会在各自调用处报错。
+     * 每次降级都会打 warn 日志，便于排查服务端配置问题。
      */
     public async login(): Promise<UserInfo> {
         const cached = this._storage.get<UserInfo>(STORAGE_KEYS.USER_INFO) ?? null;
+
+        // 上一轮已经降级过 → 直接用本地会话，不再重试云函数
+        // （否则每次冷启动都要等一次必失败的云调用，白白拖慢启动）
+        if (cached && cached.openid && this._isLocalId(cached.openid)) {
+            this._user = cached;
+            console.log(`[WxAuth] 沿用本地会话 id=${cached.openid}（云端登录此前未成功）`);
+            return cached;
+        }
 
         // 昵称/头像：优先用缓存里的（第二阶段若做了昵称填写能力，这里会带上）
         const nickname = cached?.nickname;
@@ -79,18 +95,92 @@ export class WxAuthService implements IAuthService {
                 err,
             );
 
-            // 兜底：缓存存在则继续用（离线可玩大厅，但联机功能会失败）
-            if (cached && cached.openid) {
+            // 兜底 1：缓存里有「云端下发的」openid（老版本缓存）→ 继续用
+            if (cached && cached.openid && !this._isLocalId(cached.openid)) {
                 this._user = cached;
                 console.log(`[WxAuth] 使用缓存用户 openid=${cached.openid}（云端校验未通过）`);
                 return cached;
             }
 
-            // 缓存也没有 → 无法继续，抛给上层（Loading 页展示错误）
-            throw err instanceof CloudError
-                ? err
-                : new CloudError(9999, `[WxAuth] 登录失败: ${String(err)}`);
+            // 兜底 2：缓存不可用 → 造本地会话。
+            //
+            // 为什么必须有这一层：云函数失败的原因绝大多数在服务端配置
+            // （未部署 / 未选环境 / 权限），客户端重试多少次都一样。若这里抛错，
+            // 唯一的结果是用户**永远卡在加载页**，而且连大厅都看不到 —— 一个
+            // 「登录挂了」不应该等于「整个小游戏打不开」。
+            // 单人模式（AI 练习）根本不依赖服务端，必须能玩。
+            const local = await this._createLocalUser(cached, nickname, avatarUrl);
+            console.warn(
+                `[WxAuth] 云端登录不可用，已降级为本地会话 id=${local.openid}；` +
+                    '联机功能（建房/匹配/云战绩）将不可用，请修复云函数后重启小游戏',
+            );
+            return local;
         }
+    }
+
+    /** 是否为本地生成的会话 id（非云端 openid）。 */
+    private _isLocalId(id: string): boolean {
+        return id.startsWith(LOCAL_ID_PREFIX);
+    }
+
+    /**
+     * 生成本地会话，并写回缓存（下次冷启动直接复用，避免再等一次必失败的云调用）。
+     *
+     * id 生成：用 wx.login 的 code 派生 —— code 是小游戏端唯一稳定可得的设备身份凭据，
+     * 同一设备每次冷启动拿到的是同一份身份，因此本地会话 id 在设备内保持稳定
+     * （Mock 缓存、房间列表等按 openid 归集的逻辑不会每次启动都「换个人」）。
+     * 取不到 code 时退化为随机 id：宁可换身份，也不要卡在加载页。
+     *
+     * ⚠️ 本地 id **不是**可信身份：不能用于联机对局（服务端 openid 校验必然不通过），
+     * 只用于让单机流程可跑。带 `local_` 前缀，便于日志与题库排查时一眼辨认。
+     */
+    private async _createLocalUser(
+        cached: UserInfo | null,
+        nickname: string | undefined,
+        avatarUrl: string | undefined,
+    ): Promise<UserInfo> {
+        const seed = (await this._getLoginCode()) ?? `${Date.now()}_${Math.random()}`;
+        const user: UserInfo = {
+            openid: `${LOCAL_ID_PREFIX}${this._hash(seed)}`,
+            nickname: nickname || cached?.nickname || '游客',
+            avatarUrl: avatarUrl || cached?.avatarUrl || '',
+        };
+        this._user = user;
+        this._storage.set(STORAGE_KEYS.USER_INFO, user);
+        return user;
+    }
+
+    /** 取 wx.login 的 code（失败返回 null，由调用方退化处理）。 */
+    private async _getLoginCode(): Promise<string | null> {
+        try {
+            if (typeof wx === 'undefined' || typeof wx.login !== 'function') {
+                return null;
+            }
+            const res = await new Promise<WxLoginResult>((resolve) => {
+                wx.login({
+                    success: (r) => resolve(r),
+                    fail: () => resolve({}),
+                });
+            });
+            return res && res.code ? res.code : null;
+        } catch (err) {
+            console.warn('[WxAuth] wx.login 失败（本地会话将使用随机 id）:', err);
+            return null;
+        }
+    }
+
+    /**
+     * 稳定短哈希（FNV-1a 32 位 → 8 位十六进制）。
+     *
+     * 只用于生成可读的本地 id，**不用于任何安全用途**（不做签名/校验）。
+     */
+    private _hash(input: string): string {
+        let h = 0x811c9dc5;
+        for (let i = 0; i < input.length; i++) {
+            h ^= input.charCodeAt(i);
+            h = Math.imul(h, 0x01000193) >>> 0;
+        }
+        return (h >>> 0).toString(16).padStart(8, '0');
     }
 
     public getCachedUser(): UserInfo | null {
