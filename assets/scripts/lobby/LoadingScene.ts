@@ -20,7 +20,8 @@
  *        ├─ ProgressText      [cc.Label]   ← 百分比数字
  *        ├─ Status            [cc.Label]   ← 阶段文案
  *        ├─ Hint              [cc.Label]   ← 卡住兜底提示
- *        ├─ Version           [cc.Label]
+ *        ├─ Footer              [贴底容器 cc.Widget]
+ *        │   └─ Version           [cc.Label]
  *        ├─ Overlay           （浮层容器，由 UIManager 挂 Toast/弹窗）
  *        ├─ SceneRoot         [LoadingScene]   ← 本脚本
  *        └─ Camera            [cc.Camera]

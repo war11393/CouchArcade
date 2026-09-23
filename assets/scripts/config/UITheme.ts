@@ -90,12 +90,15 @@ export const SPACE = { xs: 8, sm: 12, md: 16, lg: 24, xl: 32, xxl: 48 } as const
 /** 字号（6 级，禁止在业务代码里写魔法数字）。 */
 export const FONT = { display: 56, h1: 42, h2: 32, body: 28, sub: 24, caption: 20 } as const;
 
-/** 布局栅格（设计分辨率 720×1280 竖屏）。 */
+/**
+ * 布局栅格（基准机型 720×1280 竖屏；实际设计高运行期按机型重算，
+ * 见 core/PortraitAdapter.ts —— designW/横向量仍全局有效，designH 仅参考）。
+ */
 export const LAYOUT = {
     designW: 720,
     designH: 1280,
     gutter: 32, // 页面左右留白 → 内容宽 656
-    headerH: 152, // 顶部栏高度（含状态栏避让）
+    headerH: 152, // 顶部栏自身高度（刘海避让由 Widget.top 在运行期叠加，不占此值）
     cardRadius: 24, // 卡片圆角
     cardW: 656, // 卡片宽度 = designW - gutter*2
     btnH: 88, // 主按钮高度（≥44pt 热区）

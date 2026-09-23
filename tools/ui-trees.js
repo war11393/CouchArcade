@@ -7,8 +7,12 @@
  *   · 色块统一用 UiFill 自绘组件（`assets/scripts/core/UiFill.ts`）：
  *     cc.Graphics 不序列化绘制路径，直接写进 .scene 是空组件、什么都画不出来。
  *
- * 坐标系：Canvas 720×1280，中心为原点（anchor 0.5,0.5）。
- *   顶部 y=+640，底部 y=-640，左右 x=±360；左右留白 gutter=32 → 内容宽 656。
+ * 坐标系：Canvas 宽恒 720（宽度基准），高运行期按机型实算（designH = 720 × 屏比，
+ *   见 core/PortraitAdapter.ts）；中心为原点（anchor 0.5,0.5）。
+ *   左右 x=±360；左右留白 gutter=32 → 内容宽 656。
+ *   ⚠️ 上下贴边件（Header/Footer/Hud/ActionBar/Bg）一律用本文件的
+ *   topBarNode/bottomBarNode/fullBleedNode（cc.Widget），**禁止**写 y=±designH/2
+ *   这类绝对顶底坐标 —— 那只对 720×1280 基准机型成立。
  *
  * 统一布局栅格（4 屏共用，详见 docs/UI_DESIGN.md）：
  *   ┌ 顶部栏 Header 高 152（白底 + 底部 1px 分隔线），标题左对齐、辅助信息右对齐

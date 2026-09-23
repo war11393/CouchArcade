@@ -1,16 +1,19 @@
 /**
- * 安全区适配组件（规格核心要求）。
+ * 安全区适配组件（**已被 PortraitAdapter 取代，未挂载到任何场景**）。
+ *
+ * ⚠️ 状态说明（2026-09 竖版自适应改造）：本组件是早期按「固定设计分辨率
+ * 720×1280」写的方案 —— 只解决「内容按安全区内缩」，没解决「顶/底栏贴住
+ * 真实屏幕边缘」。现在贴边由 cc.Widget 承担、安全区避让由
+ * core/PortraitAdapter.applyEdgeInsets() 统一推给贴边条，本组件**不再使用**，
+ * 保留仅作参照。如要重新启用，先与 PortraitAdapter 对齐单位口径。
  *
  * 数据来源：IPlatformService.getSystemInfo().safeArea
  * - Mock：返回全屏或模拟刘海值（浏览器高宽比 ≥1.9 时模拟 44/34 避让）；
  * - Wx 桩：预留 wx.getSystemInfoSync() 接入点（见 WxPlatformService）。
  *
- * 适配策略：FIXED_WIDTH（拟合宽度）
- * - 设计分辨率 720×1280，横向撑满；
+ * 原适配策略：FIXED_WIDTH（拟合宽度）
+ * - 设计分辨率原假定固定 720×1280，横向撑满（现 designH 运行期按机型实算）；
  * - 纵向在刘海屏上会超出可视区，因此顶部/底部内容需要按 safeArea 内缩。
- *
- * 用法：挂在场景根 Canvas 下的「安全区容器」节点上，
- * 它会把自己的子内容节点按安全区上下内缩。
  */
 
 import { _decorator, Component, Node, UITransform, view, screen, Widget } from 'cc';
