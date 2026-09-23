@@ -14,11 +14,13 @@
  *   3. test-auth-fallback（登录三级兜底，不卡加载页）
  *   4. test-cloud-envelope（云函数信封双重包装，含反例）
  *   5. test-cloud-ai-seat（AI 练习房「开局被拦」回归，含修复前反例）
- *   6. test-result-dialog（结算弹窗无灰蒙版 + 拦截层不变式）
- *   7. test-thinking-overlay（「对手思考中」遮罩：共用基类 + 挡点击 + UI_2D 层）
- *   8. test-portrait-guards（竖版自适应短屏护栏数值仿真）
- *   9. validate-scenes（场景结构 / 路径契约 / 设计令牌）
- *  10. 云函数 common.js 副本一致性
+ *   6. test-server-ai（服务端 AI 移植 == 客户端算法，含随机棋局差分）
+ *   7. test-gomoku-ai-e2e（真实云函数 AI 回手端到端仿真）
+ *   8. test-result-dialog（结算弹窗无灰蒙版 + 拦截层不变式）
+ *   9. test-thinking-overlay（「对手思考中」遮罩：共用基类 + 挡点击 + UI_2D 层）
+ *  10. test-portrait-guards（竖版自适应短屏护栏数值仿真）
+ *  11. validate-scenes（场景结构 / 路径契约 / 设计令牌）
+ *  12. 云函数 common.js / server-ai.js 副本一致性
  */
 
 const { execFileSync } = require('child_process');
@@ -50,35 +52,50 @@ const steps = [
     { name: 'test-auth-fallback（登录兜底）', run: () => node('test-auth-fallback.js') },
     { name: 'test-cloud-envelope（云函数信封）', run: () => node('test-cloud-envelope.js') },
     { name: 'test-cloud-ai-seat（AI 练习开局）', run: () => node('test-cloud-ai-seat.js') },
+    { name: 'test-server-ai（服务端 AI 与客户端等价）', run: () => node('test-server-ai.js') },
+    { name: 'test-gomoku-ai-e2e（云函数 AI 回手端到端）', run: () => node('test-gomoku-ai-e2e.js') },
     { name: 'test-result-dialog（结算弹窗无蒙版）', run: () => node('test-result-dialog.js') },
     { name: 'test-thinking-overlay（对手思考中遮罩）', run: () => node('test-thinking-overlay.js') },
     { name: 'test-portrait-guards（竖版护栏仿真）', run: () => node('test-portrait-guards.js') },
     { name: 'validate-scenes（场景校验）', run: () => node('validate-scenes.js') },
     {
-        name: '云函数 common.js 副本一致性',
+        name: '云函数 common.js / server-ai.js 副本一致性',
         run: () => {
-            const auth = path.join(ROOT, 'cloudfunctions', 'common', 'index.js');
-            const authoritative = fs.readFileSync(auth, 'utf8');
             const dirs = fs
                 .readdirSync(path.join(ROOT, 'cloudfunctions'), { withFileTypes: true })
                 .filter((d) => d.isDirectory() && d.name !== 'common')
                 .map((d) => d.name)
                 .sort();
 
-            const drifted = [];
-            for (const d of dirs) {
-                const p = path.join(ROOT, 'cloudfunctions', d, 'common.js');
-                if (!fs.existsSync(p) || fs.readFileSync(p, 'utf8') !== authoritative) {
-                    drifted.push(d);
+            // 两份共享模块都要逐目录同步（微信云函数不支持跨目录 require）
+            const SHARED = [
+                { src: ['common', 'index.js'], dest: 'common.js' },
+                { src: ['common', 'server-ai.js'], dest: 'server-ai.js' },
+            ];
+
+            const problems = [];
+            for (const mod of SHARED) {
+                const authoritative = fs.readFileSync(
+                    path.join(ROOT, 'cloudfunctions', mod.src[0], mod.src[1]), 'utf8');
+                const drifted = [];
+                for (const d of dirs) {
+                    const p = path.join(ROOT, 'cloudfunctions', d, mod.dest);
+                    if (!fs.existsSync(p) || fs.readFileSync(p, 'utf8') !== authoritative) {
+                        drifted.push(d);
+                    }
+                }
+                if (drifted.length) {
+                    problems.push(`${mod.dest} 与权威源 cloudfunctions/${mod.src.join('/')} ` +
+                        `不一致：${drifted.join(', ')}`);
                 }
             }
-            if (drifted.length) {
+
+            if (problems.length) {
                 throw new Error(
-                    `以下云函数的 common.js 与权威源 cloudfunctions/common/index.js 不一致：` +
-                        `${drifted.join(', ')}。微信云函数不支持跨目录 require，必须逐个同步。`,
+                    `${problems.join('；')}。微信云函数不支持跨目录 require，必须逐个同步。`,
                 );
             }
-            return `  ${dirs.length} 份副本与权威源一致（${dirs.join(', ')}）\n`;
+            return `  ${dirs.length} 份 common.js + ${dirs.length} 份 server-ai.js 与权威源一致\n`;
         },
     },
 ];

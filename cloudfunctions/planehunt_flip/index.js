@@ -24,7 +24,10 @@ const {
     BizError,
     ok,
     requireRoom,
+    makeRng,
 } = require('./common');
+
+const { planeHuntDecide } = require('./server-ai');
 
 exports.main = wrap('planehunt_flip', async function (ctx, event) {
     const roomId = String(event.roomId || '');
@@ -97,7 +100,9 @@ exports.main = wrap('planehunt_flip', async function (ctx, event) {
         headsFound += 1;
     }
 
-    const finished = headsFound >= (game.heads || []).length;
+    // 这三个会被 AI 回手改写，故用 let（const 会在回手时报
+    // "Assignment to constant variable" —— gomoku_move 上被仿真抓到过同一坑）
+    let finished = headsFound >= (game.heads || []).length;
     // 翻中机头奖励额外一次（连续奖励）；否则切换回合
     const extraTurn = scored && !finished;
     let nextPlayerId = game.currentPlayerId;
@@ -124,13 +129,70 @@ exports.main = wrap('planehunt_flip', async function (ctx, event) {
             finished: finished,
             winnerId: winnerId,
             draw: draw,
+            // ⚠️ flips 是**客户端 watch 的字段**（见 WxNetSyncService._handleGameDoc：
+            //    它按数组长度增量派发 PH_FLIP_RESULT）。
+            //    只写 revealed 而不写 flips，客户端永远收不到翻格结果。
+            //    ⚠️ 这里只放**已公开**的格子信息，绝不放 cells 权威布局。
+            flips: appendFlip(game.flips, {
+                row: row,
+                col: col,
+                cell: cell,
+                scored: scored,
+                playerId: ctx.openid,
+                planeIndex: planeIndex,
+            }),
             updatedAt: Date.now(),
         },
     });
 
+    // ---- AI 回手（方案 B：练习房的 AI 由服务端代打） ----
+    //
+    // 与 gomoku_move 同构：人类这手成功写库后，若对局未结束且轮到 AI 座位，
+    // 立刻替 AI 翻一格并写库。串行执行 ⇒ 天然幂等，不会「AI 连翻两格」。
+    //
+    // ⚠️ 寻机头的「翻中机头额外一次」规则对 AI 同样成立：AI 翻中机头时
+    //    回合不会切回人类，此时要**继续让 AI 翻**（循环），否则会出现
+    //    「AI 翻中机头后卡住、人类也点不了」的死局。
+    //
+    // ⚠️ flips 必须传「含人类这一手之后」的数组 —— 不能读 game.flips
+    //    （那是本函数开头的旧快照）。用旧快照会让 AI 的写入**覆盖掉人类
+    //    刚才那格**，客户端增量派发时就少显示一格（仿真抓到过）。
+    let aiFlips = [];
+    const flipsAfterHuman = appendFlip(game.flips, {
+        row: row,
+        col: col,
+        cell: cell,
+        scored: scored,
+        playerId: ctx.openid,
+        planeIndex: planeIndex,
+    });
+    if (!finished) {
+        aiFlips = await runAiFlips(ctx, {
+            colName: colName,
+            gameDocId: game._id,
+            room: room,
+            game: game,
+            revealed: revealed,
+            scores: scores,
+            moves: moves,
+            flips: flipsAfterHuman,
+            headsFound: headsFound,
+            currentPlayerId: nextPlayerId,
+        });
+        if (aiFlips.length > 0) {
+            const last = aiFlips[aiFlips.length - 1];
+            headsFound = last.headsFound;
+            nextPlayerId = last.nextPlayerId;
+            finished = last.finished;
+            winnerId = last.winnerId;
+            draw = last.draw;
+        }
+    }
+
     console.log(
         `[planehunt_flip] room=${roomId} ${cellKey} cell=${cell} scored=${scored} ` +
-            `heads=${headsFound} next=${nextPlayerId} finished=${finished}`,
+            `heads=${headsFound}${aiFlips.length ? ` → AI×${aiFlips.length}` : ''} ` +
+            `next=${nextPlayerId} finished=${finished}`,
     );
 
     return ok({
@@ -143,8 +205,172 @@ exports.main = wrap('planehunt_flip', async function (ctx, event) {
         score: scores[ctx.openid],
         nextPlayerId: nextPlayerId,
         planeIndex: planeIndex,
+        /** AI 回手序列（可能多格：AI 翻中机头会连翻） */
+        aiFlips: aiFlips.map(function (f) {
+            return {
+                row: f.row,
+                col: f.col,
+                cell: f.cell,
+                scored: f.scored,
+                playerId: f.playerId,
+            };
+        }),
     });
 });
+
+/**
+ * 让 AI 连续翻格直到该轮结束（回合交回人类或对局结束），并写库。
+ *
+ * @returns 本次 AI 的翻格序列（每次含落库后的权威状态）
+ */
+async function runAiFlips(ctx, st) {
+    const out = [];
+    let currentPlayerId = st.currentPlayerId;
+    let headsFound = st.headsFound;
+    let finished = false;
+    let winnerId = '';
+    let draw = false;
+
+    // 上限保护：绝不超过棋盘格子数（防御性，避免任何死循环）
+    const maxFlips = st.game.size * st.game.size;
+    for (let guard = 0; guard < maxFlips; guard++) {
+        const seat = st.room.seats.find(function (s) {
+            return s.playerId === currentPlayerId;
+        });
+        if (!seat || !seat.isAI) {
+            break; // 轮到真人（联机路径）或找不到座位
+        }
+
+        const state = {
+            size: st.game.size,
+            cells: st.game.cells,
+            revealed: revealMatrixToBool(st.revealed, st.game.size),
+        };
+        const rng = makeRng((st.game.seed || 0) + headsFound * 104729 + out.length);
+        const decision = planeHuntDecide(state, rng);
+        if (!decision) {
+            break; // 无可用格
+        }
+
+        const key = decision.row + ',' + decision.col;
+        if (st.revealed[key]) {
+            break; // 理论上不会发生；防御性退出
+        }
+
+        const cell = st.game.cells[decision.row][decision.col];
+        const planeIndex = findPlaneIndex(st.game, decision.row, decision.col);
+        st.revealed[key] = {
+            cell: cell,
+            byPlayerId: seat.playerId,
+            planeIndex: planeIndex,
+            at: Date.now(),
+            byAI: true,
+        };
+        st.scores[seat.playerId] = st.scores[seat.playerId] || 0;
+        st.moves[seat.playerId] = (st.moves[seat.playerId] || 0) + 1;
+
+        const scored = cell === 2;
+        if (scored) {
+            st.scores[seat.playerId] += 1;
+            headsFound += 1;
+        }
+
+        finished = headsFound >= (st.game.heads || []).length;
+        // 翻中机头 → AI 继续翻（与人类规则一致）；否则回合交给人类
+        const aiExtraTurn = scored && !finished;
+        if (finished) {
+            const result = judge(st.scores);
+            winnerId = result.winnerId;
+            draw = result.draw;
+        }
+        currentPlayerId = aiExtraTurn || finished ? seat.playerId : st.room.seats[0].playerId;
+
+        out.push({
+            row: decision.row,
+            col: decision.col,
+            cell: cell,
+            scored: scored,
+            playerId: seat.playerId,
+            planeIndex: planeIndex,
+            headsFound: headsFound,
+            nextPlayerId: currentPlayerId,
+            finished: finished,
+            winnerId: winnerId,
+            draw: draw,
+        });
+
+        if (!aiExtraTurn) {
+            break; // 回合已交给人类（或已结束）
+        }
+    }
+
+    if (out.length === 0) {
+        return out;
+    }
+
+    const last = out[out.length - 1];
+    // AI 的每一格都要追加进 flips（客户端按数组长度增量派发），
+    // 否则人类界面收不到 AI 翻格、会卡在「对手思考中」。
+    // 起点用调用方传入的 flips（已含人类那一手），不能读 st.game.flips 旧快照。
+    let flips = Array.isArray(st.flips) ? st.flips.slice() : [];
+    for (const f of out) {
+        flips = appendFlip(flips, {
+            row: f.row,
+            col: f.col,
+            cell: f.cell,
+            scored: f.scored,
+            playerId: f.playerId,
+            planeIndex: f.planeIndex,
+            byAI: true,
+        });
+    }
+
+    await ctx.db.collection(st.colName).doc(st.gameDocId).update({
+        data: {
+            revealed: st.revealed,
+            scores: st.scores,
+            moves: st.moves,
+            headsFound: last.headsFound,
+            currentPlayerId: last.nextPlayerId,
+            finished: last.finished,
+            winnerId: last.winnerId,
+            draw: last.draw,
+            flips: flips,
+            updatedAt: Date.now(),
+        },
+    });
+    return out;
+}
+
+/**
+ * 追加一条翻格记录（返回新数组）。
+ *
+ * 为什么单独抽出来：人类那手与 AI 的每一格都要走同一套追加逻辑，
+ * 保证客户端看到的增量序列完整、顺序一致（漏一条客户端就会少显示一格）。
+ */
+function appendFlip(existing, item) {
+    const arr = Array.isArray(existing) ? existing.slice() : [];
+    arr.push(item);
+    return arr;
+}
+
+/**
+ * 把 revealed 的「稀疏对象」形态转成 AI 需要的二维布尔矩阵。
+ *
+ * 玩法数据存的是 { "r,c": {...} } 稀疏对象（见 planehunt_flip 的幂等分支），
+ * 而 AI 是按二维矩阵遍历的 —— 这里做形态适配，避免为了 AI 改动权威存储结构。
+ */
+function revealMatrixToBool(revealed, size) {
+    const m = [];
+    for (let r = 0; r < size; r++) {
+        const row = [];
+        for (let c = 0; c < size; c++) {
+            row.push(!!revealed[r + ',' + c]);
+        }
+        m.push(row);
+    }
+    return m;
+}
 
 /** 由权威布局反查该格所属飞机编号。 */
 function findPlaneIndex(game, row, col) {
