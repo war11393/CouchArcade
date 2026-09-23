@@ -220,6 +220,31 @@ console.log('\n场景 7：客户端 RoomScene 不再误报「可开局」');
     check('按钮日志区分 全员入座/全员就绪', /全员入座=/.test(roomSrc) && /全员就绪=/.test(roomSrc));
 }
 
+// ---------------------------------------------------------------------
+console.log('\n场景 8：AI 练习无准备环节（需求：点 AI 练习直接进对局）');
+// ---------------------------------------------------------------------
+{
+    const roomSrc = read('assets/scripts/room/RoomScene.ts');
+
+    check('练习房隐藏「准备」按钮', /_setReadyButtonVisible\(!state\.isPractice\)/.test(roomSrc),
+        '准备按钮未按 isPractice 隐藏');
+    check('隐藏时把「离开」按钮居中', /visible \? 163 : 0/.test(roomSrc),
+        '隐藏准备后离开未居中，会留下空洞');
+    check('隐藏/显示状态做了去重（避免每次推送重排）', /this\._readyHidden === !visible/.test(roomSrc));
+    check('练习房文案不再要求点准备', !/点击「开始游戏」开局/.test(roomSrc),
+        '仍残留「点击开始游戏开局」的旧文案');
+
+    // 关键：练习房「无准备环节」能成立，靠的是服务端放行条件自洽 ——
+    // 房主免准备 + AI 免准备，两者缺一就会出现「按钮没了但开不了局」。
+    const startGameSrc = read('cloudfunctions/startGame/index.js');
+    check('服务端：练习房房主免准备（配合按钮隐藏）',
+        /room\.isPractice\s*&&\s*s\.seatIndex === 0/.test(startGameSrc),
+        '若服务端仍要求房主 ready，隐藏按钮后将无法开局');
+    const practiceSeats = buildSeats(true, 'oOwner', 2, ['机头猎手'], true);
+    check('无准备环节也能开局（房主 ready=false + AI ready=true）',
+        practiceSeats[0].ready === false && startGameAllows(practiceSeats, true));
+}
+
 console.log(`\n${fail === 0 ? 'ALL_AI_SEAT_TESTS_PASSED' : 'AI_SEAT_FAILURES=' + fail}` +
     `  (${pass} 通过, ${fail} 失败)`);
 process.exit(fail === 0 ? 0 : 1);

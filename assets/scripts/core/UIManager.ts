@@ -485,11 +485,18 @@ export class UIManager {
         }
         const root = this._overlayRoot(canvas);
 
-        // 蒙层
-        const mask = createRect('ResultMask', view.getVisibleSize().width, view.getVisibleSize().height, overlayColor(140));
+        // 点击拦截层（**不可见**）。
+        //
+        // 原实现这里是一块 overlayColor(140) 的灰色蒙版，需求改为「不显示灰色蒙版，
+        // 只显示结果白卡片」。但拦截层不能直接删掉：
+        //   · 它是 ResultPanel 的父节点（面板靠它居中，删了面板就没地方挂）；
+        //   · 它挡住底下棋盘的点击，否则结算时还能误触落子。
+        // 解法：容器保留、尺寸铺满，但**不画任何底色**（alpha=0）。
+        // 注意不能用 node.active=false —— 那会连同子节点（白卡片）一起隐藏。
+        const mask = createRect('ResultMask', view.getVisibleSize().width, view.getVisibleSize().height, overlayColor(0));
         root.addChild(mask);
         mask.setPosition(new Vec3(0, 0, 0));
-        // 遮罩拦截点击，避免误触底下棋盘（BlockInputEvents 比裸 UITransform 可靠）
+        // BlockInputEvents 比裸 UITransform 可靠 —— 没有它点击会穿透到棋盘
         mask.addComponent(BlockInputEvents);
 
         const myStat = result.stats[0];

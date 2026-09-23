@@ -6,6 +6,15 @@
  *     → PLAYING（进入对局）→ FINISHED
  *   异常分支：DISSOLVED（超时解散）、断线重连、中途退出
  *
+ * **两种模式的开局路径不同**（改这里前务必分清）：
+ *   · AI 练习（mode='ai' / isPractice=true）：**没有准备环节** ——
+ *     AI 座位由服务端建房时置 ready=true，房主免准备，房间建好即自动开局；
+ *     「准备」按钮在练习房隐藏（见 _setReadyButtonVisible）。
+ *   · 联机（mode='pvp'）：**必须全员准备**（含房主自己）才自动开局，
+ *     status 由服务端 ready 云函数推进到 READY。房主没有免准备特权。
+ *   两套判定必须与服务端 startGame 的口径一致，否则会出现
+ *   「客户端说能开局、服务端却拒绝」（历史事故，见 test-cloud-ai-seat.js）。
+ *
  * ⚠️ UI 是【静态节点】，定义在 tools/ui-trees.js 的 roomTree()，由 gen-scenes.js
  * 编译进 Room.scene。本控制器**不再运行时创建 UI**（除模式弹窗浮层），只负责：
  *   1. 绑定已有节点（按路径查找）
@@ -31,7 +40,7 @@
  *        └─ Camera             [cc.Camera]
  */
 
-import { _decorator, Color, Component, Label, Node } from 'cc';
+import { _decorator, Color, Component, Label, Node, Vec3 } from 'cc';
 import { requireGameMeta } from '../config/GameList';
 import { RoomState, RoomStatus, SeatInfo } from '../core/services/IServices';
 import { services, ensureServices } from '../core/ServiceLocator';
@@ -58,6 +67,8 @@ export class RoomScene extends Component {
     private _entered = false;
     /** 开局请求进行中（防止 watch 重复推送触发并发 startRoom）。 */
     private _starting = false;
+    /** 「准备」按钮当前是否处于隐藏态（用于避免每次状态推送都重排按钮）。 */
+    private _readyHidden = false;
 
     protected async onLoad(): Promise<void> {
         console.log('[RoomScene] onLoad 开始');
@@ -161,8 +172,12 @@ export class RoomScene extends Component {
             this._setupShare();
 
             if (params.mode === 'ai') {
-                console.log('[RoomScene] AI 练习模式：跳过等待，准备开局');
-                this._setStatus('AI 对手已就位，点击「开始游戏」开局');
+                // AI 练习：**没有准备环节**。
+                // AI 座位由服务端建房时置 ready=true，房主（自己）免准备，
+                // 房间建好即满足开局条件 → 下面的 _onRoomState 会自动开局。
+                // 这里只更新提示文案，不再要求用户点「准备」。
+                console.log('[RoomScene] AI 练习模式：无准备环节，等待自动开局');
+                this._setStatus('AI 对手已就位，正在开始对局…');
             }
         } catch (err) {
             console.error('[RoomScene] 初始化房间失败:', err);
@@ -286,7 +301,12 @@ export class RoomScene extends Component {
             this._myReady ? '取消准备' : '准  备',
         );
 
-        // 「能不能开局」= 房主 + 非对局中 + 练习房或全员就绪。
+        // AI 练习：**没有准备环节**，把「准备」按钮藏起来（空间让给「离开」）。
+        // 与 _initRoom 的文案、以及服务端「练习房房主免准备」保持一致 ——
+        // 三处必须同口径，否则会出现「按钮写准备、服务端却已放行」的困惑。
+        this._setReadyButtonVisible(!state.isPractice);
+
+        // 「能不能开局」= 房主 + 非对局中 + 练习房全员入座 / 联机房全员就绪。
         //
         // ⚠️ 旧实现在练习房里只要 isPractice=true 就恒报 canStart=true，
         //    连「有座位空缺」都报 true —— 上一轮排查「AI 练习无法开局」时
@@ -309,6 +329,30 @@ export class RoomScene extends Component {
             `[RoomScene] 按钮刷新：房主=${this._isOwner} 可开局=${canStart} 状态=${state.status}` +
                 ` 我已准备=${this._myReady} 全员入座=${allSeated} 全员就绪=${allReady} isPractice=${state.isPractice}`,
         );
+    }
+
+    /**
+     * 显隐「准备」按钮（练习房隐藏）。
+     *
+     * 隐藏时把「离开」按钮挪到中间：否则左半边留个空洞，看起来像按钮丢了。
+     */
+    private _setReadyButtonVisible(visible: boolean): void {
+        if (this._readyHidden === !visible) {
+            return; // 状态未变，避免每帧重排
+        }
+        this._readyHidden = !visible;
+
+        const ready = findNode(this.node, 'Canvas/BtnBar/BtnReady');
+        const leave = findNode(this.node, 'Canvas/BtnBar/BtnLeave');
+        if (ready) {
+            ready.active = visible;
+        }
+        if (leave) {
+            // 设计态：准备在 x=-163、离开在 x=+163（并列居中）。
+            // 只剩离开时移到 x=0 居中。
+            leave.setPosition(new Vec3(visible ? 163 : 0, leave.position.y, leave.position.z));
+        }
+        console.log(`[RoomScene] 准备按钮${visible ? '显示' : '隐藏（AI 练习无准备环节）'}`);
     }
 
     /** 房间级消息处理。 */
