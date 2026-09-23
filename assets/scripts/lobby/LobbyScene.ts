@@ -32,6 +32,7 @@ import { GameMeta, getSortedGameList } from '../config/GameList';
 import { services, ensureServices } from '../core/ServiceLocator';
 import { uiManager } from '../core/UIManager';
 import { bindClick, fillAt, findNode, requireNode, setLabelText } from '../core/UIFactory';
+import { portraitAdapter } from '../core/PortraitAdapter';
 import { isGameRegistered } from '../games/common/GameRegistry';
 
 const { ccclass } = _decorator;
@@ -43,6 +44,9 @@ export class LobbyScene extends Component {
 
     protected onLoad(): void {
         ensureServices();
+        // 竖版自适应：按机型重算设计分辨率 + 贴边条安全区避让（见 core/PortraitAdapter.ts）
+        portraitAdapter.apply();
+        portraitAdapter.applyEdgeInsets(this.node);
         this._bindNodes();
         void this._loadOnlineCount();
     }
@@ -63,7 +67,7 @@ export class LobbyScene extends Component {
         const dataSource = AppConfig.USE_MOCK ? 'Mock 通道' : '微信云开发';
         setLabelText(
             this.node,
-            'Canvas/Footer',
+            'Canvas/Footer/FooterText',
             `MVP：寻机头 · 五子棋  |  数据来源：${dataSource}`,
         );
 

@@ -37,6 +37,7 @@ import { parseRoomLaunchQuery, onUpdateStateChange } from '../core/AppHooks';
 import { services, ensureServices } from '../core/ServiceLocator';
 import { uiManager } from '../core/UIManager';
 import { findNode, requireNode, setLabelText, labelAt } from '../core/UIFactory';
+import { portraitAdapter } from '../core/PortraitAdapter';
 import type { LaunchOptions } from '../core/services/IServices';
 
 const { ccclass } = _decorator;
@@ -71,6 +72,11 @@ export class LoadingScene extends Component {
         // 服务兜底：确保 ServiceLocator 已注入，并注册应用级钩子
         // （热启动 / 网络恢复 → 断线重连，见 core/AppHooks.ts）
         ensureServices();
+
+        // 竖版自适应：先按当前机型重算设计分辨率，再把安全区避让推给贴边条。
+        // 必须早于任何按布局排布的动作（见 core/PortraitAdapter.ts）。
+        portraitAdapter.apply();
+        portraitAdapter.applyEdgeInsets(this.node);
 
         this._bindNodes();
         this._lastAdvanceAt = Date.now();
@@ -126,11 +132,16 @@ export class LoadingScene extends Component {
         requireNode(this.node, 'Canvas/Status');
 
         // 版本/模式文案（静态场景里是占位文本，这里按配置刷新）
+        //
+        // 尺寸一项在自适应方案下不能写 AppConfig 的静态常量（那是设计期基准，
+        // 不代表当前机型）——改为报实际生效的设计分辨率，才能在真机上验证
+        // 「竖版自适应是否按预期算出了高度」。
         const mode = AppConfig.USE_MOCK ? 'Mock 预览模式' : '微信真机模式';
+        const vs = portraitAdapter.layout;
         setLabelText(
             this.node,
-            'Canvas/Version',
-            `v${AppConfig.APP_VERSION}  |  ${mode}  |  ${AppConfig.DESIGN_WIDTH}x${AppConfig.DESIGN_HEIGHT}`,
+            'Canvas/Footer/Version',
+            `v${AppConfig.APP_VERSION}  |  ${mode}  |  ${vs.designW}x${vs.designH}`,
         );
 
         // 初始态：0% + 「正在加载资源…」

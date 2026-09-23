@@ -69,12 +69,12 @@ const REQUIRED_PATHS = {
         'Canvas/ProgressBarBg', 'Canvas/ProgressBarBg/ProgressBarFill',
         // 加载页的「明确进度反馈」三件套：百分比数字 + 阶段文案 + 卡住兜底提示
         'Canvas/ProgressText', 'Canvas/Status', 'Canvas/Hint',
-        'Canvas/Version',
+        'Canvas/Footer/Version',
         OVERLAY_PATH,
     ],
     Lobby: [
         'Canvas/Bg', 'Canvas/Header', 'Canvas/Header/HeaderTitle', 'Canvas/Header/HeaderUser',
-        'Canvas/GameList', 'Canvas/GameList/view', 'Canvas/GameList/view/content', 'Canvas/Footer',
+        'Canvas/GameList', 'Canvas/GameList/view', 'Canvas/GameList/view/content', 'Canvas/Footer/FooterText',
         OVERLAY_PATH,
         ...CARD_PATHS('planehunt'), ...CARD_PATHS('gomoku'),
     ],
@@ -83,8 +83,8 @@ const REQUIRED_PATHS = {
         'Canvas/SeatTop', 'Canvas/SeatTop/SeatName', 'Canvas/SeatTop/SeatStatus', 'Canvas/SeatTop/SeatScore',
         'Canvas/SeatBottom', 'Canvas/SeatBottom/SeatName', 'Canvas/SeatBottom/SeatStatus', 'Canvas/SeatBottom/SeatScore',
         'Canvas/VsLabel', 'Canvas/Status',
-        'Canvas/BtnReady', 'Canvas/BtnReady/BtnReadyLabel',
-        'Canvas/BtnLeave', 'Canvas/BtnLeave/BtnLeaveLabel',
+        'Canvas/BtnBar/BtnReady', 'Canvas/BtnBar/BtnReady/BtnReadyLabel',
+        'Canvas/BtnBar/BtnLeave', 'Canvas/BtnBar/BtnLeave/BtnLeaveLabel',
         OVERLAY_PATH,
     ],
     Game: [
@@ -318,12 +318,30 @@ for (const f of ['Loading', 'Lobby', 'Room', 'Game']) {
             'Game HUD 路径契约完整（GameScene 按路径绑定）' + (missing.length ? ' → 缺: ' + missing.join(', ') : ''));
 
         // 取顶层区块的 y 中心与高度，验证纵向依次不重叠
+        //
+        // ⚠️ 自适应改动的关键点：Hud / ActionBar 现在是 **Widget 贴边**（贴顶/贴底），
+        //    它们的 `_lpos.y` 只是编辑器预览值（0），运行时由 Widget 按屏幕高落位。
+        //    直接读 _lpos 会把「贴顶的 HUD」和「贴底的 ActionBar」都算成 y=0 而
+        //    报出假的负间隙。这里按 Widget 的对齐位把区块还原到**参考设计高**
+        //    （DESIGN_H，即 720×1280 基准机型）下的真实位置，再把重叠判定跑一遍：
+        //    基准机型上不重叠 ⇒ 任何 ≥ 基准高的机型都不会更挤（贴顶贴底会拉开距离）。
+        const refH = T.LAYOUT.designH;
         const blockOf = (name) => {
             const n = nodes.find((x) => x._name === name);
             if (!n) return null;
             const ut = n._components.map((r) => s[r.__id__]).find((x) => x.__type__ === 'cc.UITransform');
             if (!ut) return null;
-            return { name, y: n._lpos.y, h: ut._contentSize.height };
+            const h = ut._contentSize.height;
+            const w = n._components.map((r) => s[r.__id__]).find((x) => x.__type__ === 'cc.Widget');
+            let y = n._lpos.y;
+            if (w) {
+                // AlignFlags: TOP=1 MID=2 BOT=4 LEFT=8 CENTER=16 RIGHT=32
+                const top = (w._alignFlags & 1) !== 0;
+                const bot = (w._alignFlags & 4) !== 0;
+                if (top && !bot) y = refH / 2 - h / 2 - (w._top || 0);
+                else if (bot && !top) y = -refH / 2 + h / 2 + (w._bottom || 0);
+            }
+            return { name, y, h };
         };
         const blocks = ['Hud', 'BoardArea', 'EmotePanel', 'ActionBar']
             .map(blockOf)

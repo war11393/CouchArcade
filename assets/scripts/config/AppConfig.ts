@@ -52,11 +52,26 @@ export class AppConfig {
      */
     public static readonly APP_VERSION = '0.1.1';
 
-    /** 设计分辨率：竖屏主流基准 720 × 1280。 */
+    /**
+     * 设计分辨率**基准**：竖屏主流机型 720 × 1280。
+     *
+     * ⚠️ 竖版自适应（core/PortraitAdapter.ts）落地后，这里的语义是：
+     *   · DESIGN_WIDTH  = 宽度基准，**运行期保持生效**（FIXED_WIDTH 横向撑满，
+     *     所有内容宽度按 720 书写）；
+     *   · DESIGN_HEIGHT = 参考高度，**运行期会被按机型重算**
+     *     （designH = 720 × 屏幕高/宽）。它只用于编辑器预览、
+     *     校验脚本的参考几何，以及拿不到屏幕尺寸时的兜底。
+     *   想知道当前机型真实的设计高，用 portraitAdapter.layout.designH。
+     */
     public static readonly DESIGN_WIDTH = 720;
     public static readonly DESIGN_HEIGHT = 1280;
 
-    /** 适配策略说明：FIXED_WIDTH（拟合宽度），在 settings/v2/packages/project.json 中设置 fitWidth=true。 */
+    /**
+     * 适配策略：FIXED_WIDTH（拟合宽度）。
+     * settings/v2/packages/project.json 的 fitWidth=true 是**启动初值**；
+     * PortraitAdapter.apply() 在每个场景 onLoad 时以同样的策略重算设计高，
+     * 两者必须保持一致，否则首帧与第二帧之间会出现一次可见的缩放跳变。
+     */
     public static readonly DESIGN_FIT_WIDTH = true;
     public static readonly DESIGN_FIT_HEIGHT = false;
 

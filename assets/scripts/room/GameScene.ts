@@ -25,6 +25,7 @@ import {
     setLabelText,
 } from '../core/UIFactory';
 import { GameContext, GameResult, IGame } from '../games/common/IGame';
+import { portraitAdapter } from '../core/PortraitAdapter';
 import { createGame } from '../games/common/GameRegistry';
 import { GomokuBoard } from '../games/gomoku/GomokuBoard';
 import { GomokuGame, GomokuAuthority } from '../games/gomoku/GomokuGame';
@@ -65,6 +66,10 @@ export class GameScene extends Component {
 
     protected onLoad(): void {
         ensureServices();
+        // 竖版自适应：按机型重算设计分辨率 + 贴边条安全区避让（见 core/PortraitAdapter.ts）
+        // 必须早于 _createGame —— 棋盘的可用宽高从重算后的视口来取。
+        portraitAdapter.apply();
+        portraitAdapter.applyEdgeInsets(this.node);
         const params = uiManager.consumeGameParams();
         if (!params) {
             console.warn('[GameScene] 缺少对局参数，返回大厅');

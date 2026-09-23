@@ -37,6 +37,7 @@ import { services, ensureServices } from '../core/ServiceLocator';
 import { GameEvent, eventBus } from '../core/EventBus';
 import { GameSceneParams, RoomSceneParams, uiManager } from '../core/UIManager';
 import { THEME, bindClick, findNode, setLabelText, hexToColor } from '../core/UIFactory';
+import { portraitAdapter } from '../core/PortraitAdapter';
 
 const { ccclass } = _decorator;
 
@@ -68,6 +69,10 @@ export class RoomScene extends Component {
             `[RoomScene] 收到进入参数：gameId=${this._params.gameId} mode=${this._params.mode} joinRoomId=${this._params.joinRoomId ?? '(无)'}`,
         );
 
+        // 竖版自适应：按机型重算设计分辨率 + 贴边条安全区避让（见 core/PortraitAdapter.ts）
+        portraitAdapter.apply();
+        portraitAdapter.applyEdgeInsets(this.node);
+
         this._bindNodes();
         await this._initRoom();
         console.log('[RoomScene] onLoad 完成（房间已初始化）');
@@ -96,15 +101,15 @@ export class RoomScene extends Component {
         }
 
         // 按钮
-        bindClick(this.node, 'Canvas/BtnReady', () => void this._onToggleReady());
-        bindClick(this.node, 'Canvas/BtnLeave', () => void this._onLeave());
+        bindClick(this.node, 'Canvas/BtnBar/BtnReady', () => void this._onToggleReady());
+        bindClick(this.node, 'Canvas/BtnBar/BtnLeave', () => void this._onLeave());
 
         // 初始文案
         setLabelText(this.node, 'Canvas/SeatTop/SeatName', '等待加入…');
         setLabelText(this.node, 'Canvas/SeatTop/SeatStatus', '空位');
         setLabelText(this.node, 'Canvas/SeatBottom/SeatName', '等待加入…');
         setLabelText(this.node, 'Canvas/SeatBottom/SeatStatus', '空位');
-        setLabelText(this.node, 'Canvas/BtnReady/BtnReadyLabel', '准  备');
+        setLabelText(this.node, 'Canvas/BtnBar/BtnReady/BtnReadyLabel', '准  备');
     }
 
     // ==================== 房间逻辑 ====================
@@ -256,7 +261,7 @@ export class RoomScene extends Component {
     private _refreshButtons(state: RoomState): void {
         setLabelText(
             this.node,
-            'Canvas/BtnReady/BtnReadyLabel',
+            'Canvas/BtnBar/BtnReady/BtnReadyLabel',
             this._myReady ? '取消准备' : '准  备',
         );
 
@@ -282,7 +287,7 @@ export class RoomScene extends Component {
             await services.room.setReady(this._myReady);
             setLabelText(
                 this.node,
-                'Canvas/BtnReady/BtnReadyLabel',
+                'Canvas/BtnBar/BtnReady/BtnReadyLabel',
                 this._myReady ? '取消准备' : '准  备',
             );
             console.log(`[RoomScene] 准备状态已设置为 ${this._myReady}`);

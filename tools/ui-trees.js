@@ -29,7 +29,7 @@ const T = require('./theme.js');
 
 const {
     LAYER_UI_2D,
-    makeNode, label, scrollView, layout, progressBar, mask, button,
+    makeNode, label, scrollView, layout, progressBar, mask, button, widget,
     hexToColor, nodeRef,
 } = B;
 
@@ -97,6 +97,90 @@ function cardNode(name, w, h, opts = {}) {
         borderHex: opts.borderHex || C.border,
         borderWidth: 1,
     });
+}
+
+// =====================================================================
+// 贴边件（竖版自适应：不写死设计高，跟着屏幕边缘走）
+// =====================================================================
+//
+// 背景：原先 Header/Footer/Bg 都按「固定设计高 1280」书写（y = DESIGN_H/2 - ...），
+// 一旦运行期设计高变成机型的真实高度（见 core/PortraitAdapter.ts），
+// 这些绝对坐标就会浮在屏幕中间。
+//
+// 解法：这三类节点改用 cc.Widget 锚定 Canvas 边缘 —— Widget 由引擎在
+// 分辨率变化时自动重算位置与尺寸（_alignMode = ON_WINDOW_RESIZE），
+// 因此写进 .scene 的 _lpos 只是「编辑器里看到的初始值」，
+// 真正的落位由 Widget 决定。这样**任何竖版机型**都自动正确。
+
+/** Widget 对齐位（与引擎 AlignFlags 一致）。 */
+const ALIGN = {
+    TOP: 1 << 0,
+    MID: 1 << 1,
+    BOT: 1 << 2,
+    LEFT: 1 << 3,
+    CENTER: 1 << 4,
+    RIGHT: 1 << 5,
+};
+
+/**
+ * 全屏背景：铺满整个可视区（任意机型都不留边）。
+ *
+ * 用四边贴齐（TOP|BOTTOM|LEFT|RIGHT）而非固定尺寸 —— 设计高变高时自动长高。
+ */
+function fullBleedNode(name, hex, opts = {}) {
+    return makeNode(name, {
+        pos: [0, 0],
+        size: [DESIGN_W, DESIGN_H], // 仅供编辑器预览；运行时由 Widget 拉伸
+        anchor: [0.5, 0.5],
+        layer: LAYER_UI_2D,
+    }, [
+        fillComp(hex, { alpha: opts.alpha === undefined ? 255 : opts.alpha, radius: opts.radius || 0 }),
+        widget({ alignFlags: ALIGN.TOP | ALIGN.BOT | ALIGN.LEFT | ALIGN.RIGHT, left: 0, right: 0, top: 0, bottom: 0 }),
+    ], opts.children || []);
+}
+
+/** 顶边栏：高度固定，左右贴边、上贴顶（y 自动落在屏幕顶端）。 */
+function topBarNode(name, h, hex, opts = {}) {
+    // 锚点保持中心（与 fillNode 一致）：Widget 按包围盒对齐、与锚点无关，
+    // 而子节点坐标（divider 的 -h/2 等）全按「容器中心为原点」书写，
+    // 改锚点会把这些偏移悄悄平移半高。
+    return makeNode(name, {
+        pos: [0, 0],
+        size: [DESIGN_W, h],
+        anchor: [0.5, 0.5],
+        layer: LAYER_UI_2D,
+    }, [
+        fillComp(hex, {
+            radius: opts.radius || 0,
+            borderHex: opts.borderHex || null,
+            borderWidth: opts.borderWidth === undefined ? 1 : opts.borderWidth,
+        }),
+        widget({
+            alignFlags: ALIGN.TOP | ALIGN.LEFT | ALIGN.RIGHT,
+            left: 0, right: 0, top: 0,
+        }),
+    ], opts.children || []);
+}
+
+/** 底边栏 / 页脚容器：高度固定，左右贴边、下贴底（y 自动落在屏幕底端）。 */
+function bottomBarNode(name, h, hex, opts = {}) {
+    // 锚点同样保持中心，理由见 topBarNode 注释。
+    return makeNode(name, {
+        pos: [0, 0],
+        size: [DESIGN_W, h],
+        anchor: [0.5, 0.5],
+        layer: LAYER_UI_2D,
+    }, [
+        fillComp(hex, {
+            radius: opts.radius || 0,
+            borderHex: opts.borderHex || null,
+            borderWidth: opts.borderWidth === undefined ? 1 : opts.borderWidth,
+        }),
+        widget({
+            alignFlags: ALIGN.BOT | ALIGN.LEFT | ALIGN.RIGHT,
+            left: 0, right: 0, bottom: 0,
+        }),
+    ], opts.children || []);
 }
 
 /** 文本节点。hAlign: 0=左 1=中 2=右；overflow: 0=NONE 1=CLAMP 3=RESIZE_HEIGHT。 */
@@ -214,7 +298,8 @@ function overlayNode() {
  *   Hint            卡住时的兜底提示（长时间无进展才显示）
  */
 function loadingTree() {
-    const bg = fillNode('Bg', DESIGN_W, DESIGN_H, C.bg);
+    // 背景铺满任意竖版机型（矩形拉伸，不留边）
+    const bg = fullBleedNode('Bg', C.bg);
 
     // 品牌标：主色圆角方块 + 白色首字（扁平、零美术资源）
     const logo = fillNode('Logo', 168, 168, C.primary, {
@@ -265,25 +350,36 @@ function loadingTree() {
 
     // 占位文本：运行时由 LoadingScene 按 AppConfig.APP_VERSION 刷新
     // （版本号唯一来源在 AppConfig，这里只负责「非空且不误导」）
-    const version = textNode('Version', 'v0.1.1  |  Mock 预览模式  |  720x1280', FONT.caption, C.inkFaint, {
-        pos: [0, -600], size: [660, 34],
+    //
+    // 贴底容器：不同机型屏幕高不同，写死 y=-600 会在长屏上浮起来。
+    // 用一个 96 高的底边栏「装」这行字，由 Widget 贴住屏幕底部
+    // （子节点坐标相对容器中心，Version 距容器中心 +8 即距底边 40）。
+    const footer = bottomBarNode('Footer', 96, C.bg, {
+        borderWidth: 0,
+        children: [
+            textNode('Version', 'v0.1.1  |  Mock 预览模式', FONT.caption, C.inkFaint, {
+                // 距底边 40：容器锚在底边（anchor y=0），子节点坐标相对容器中心
+                pos: [0, 8], size: [660, 34],
+            }),
+        ],
     });
 
     const overlay = overlayNode();
 
-    return [bg, logo, title, subtitle, barBg, progressText, status, hint, version, overlay];
+    return [bg, logo, title, subtitle, barBg, progressText, status, hint, footer, overlay];
 }
 
 // =====================================================================
 // Lobby 场景 —— 游戏大厅
 // =====================================================================
 function lobbyTree() {
-    const bg = fillNode('Bg', DESIGN_W, DESIGN_H, C.bg);
+    const bg = fullBleedNode('Bg', C.bg);
     const overlay = overlayNode();
 
     // ---- 顶部栏：白底 + 底部 1px 分隔线，标题左对齐 / 用户右对齐 ----
-    const header = fillNode('Header', DESIGN_W, LAYOUT.headerH, C.surface, {
-        pos: [0, DESIGN_H / 2 - LAYOUT.headerH / 2],
+    // 贴顶（Widget），不写死 y —— 长屏上顶栏依然贴着屏幕顶端
+    const header = topBarNode('Header', LAYOUT.headerH, C.surface, {
+        borderWidth: 0,
         children: [
             dividerNode('HeaderDivider', DESIGN_W, { pos: [0, -LAYOUT.headerH / 2] }),
             textNode('HeaderTitle', '游戏大厅', FONT.h1, C.ink, {
@@ -296,6 +392,10 @@ function lobbyTree() {
     });
 
     // ---- 游戏列表（ScrollView > view(Mask) > content(Layout 纵向)）----
+    //
+    // 竖版自适应：列表高度由「可用区」动态决定（原先 VIEW_H=840 写死）。
+    // 这里保留一个设计期基准值供编辑器预览；运行期由 LobbyScene 依据
+    // PortraitAdapter 的安全区与可视高重算 view/GameList 的高度与位置。
     const VIEW_W = CONTENT_W;
     const VIEW_H = 840;
     const VIEW_Y = 44;
@@ -343,8 +443,15 @@ function lobbyTree() {
     // 底部说明：实际文案由 LobbyScene 在运行时按 AppConfig.USE_MOCK 刷新
     // （Mock 模式写「Mock 通道」，真机模式写「微信云开发」）。
     // 这里只放中性占位，避免出现「已是真机却写着 Mock」的误导。
-    const footer = textNode('Footer', 'MVP：寻机头 · 五子棋', FONT.caption, C.inkFaint, {
-        pos: [0, -600], size: [660, 34],
+    //
+    // 贴底容器（Widget）—— 不再写死 y=-600，任何机型都贴着屏幕底部
+    const footer = bottomBarNode('Footer', 96, C.bg, {
+        borderWidth: 0,
+        children: [
+            textNode('FooterText', 'MVP：寻机头 · 五子棋', FONT.caption, C.inkFaint, {
+                pos: [0, 8], size: [660, 34],
+            }),
+        ],
     });
 
     return [bg, header, gameList, footer, overlay];
@@ -402,11 +509,11 @@ function makeCard(id, name, desc, iconText, iconHex, y) {
 // Room 场景 —— 房间准备
 // =====================================================================
 function roomTree() {
-    const bg = fillNode('Bg', DESIGN_W, DESIGN_H, C.bg);
+    const bg = fullBleedNode('Bg', C.bg);
     const overlay = overlayNode();
 
-    const header = fillNode('Header', DESIGN_W, LAYOUT.headerH, C.surface, {
-        pos: [0, DESIGN_H / 2 - LAYOUT.headerH / 2],
+    const header = topBarNode('Header', LAYOUT.headerH, C.surface, {
+        borderWidth: 0,
         children: [
             dividerNode('HeaderDivider', DESIGN_W, { pos: [0, -LAYOUT.headerH / 2] }),
             textNode('RoomTitle', '游戏房间', FONT.h1, C.ink, {
@@ -428,14 +535,21 @@ function roomTree() {
         pos: [0, -130], size: [CONTENT_W, 44],
     });
 
-    const btnReady = buttonNode('BtnReady', '准  备', 300, 92, {
-        pos: [-163, -480], style: 'primary', fontSize: FONT.h2, radius: RADIUS.lg,
-    });
-    const btnLeave = buttonNode('BtnLeave', '离  开', 300, 92, {
-        pos: [163, -480], style: 'secondary', fontSize: FONT.h2, radius: RADIUS.lg,
+    // 底部操作区：贴底容器（Widget）—— 原先写死 y=-480，长屏上会浮起
+    // 容器高 200，两个按钮在容器内居中（子节点坐标相对容器中心）
+    const btnBar = bottomBarNode('BtnBar', 200, C.bg, {
+        borderWidth: 0,
+        children: [
+            buttonNode('BtnReady', '准  备', 300, 92, {
+                pos: [-163, 0], style: 'primary', fontSize: FONT.h2, radius: RADIUS.lg,
+            }),
+            buttonNode('BtnLeave', '离  开', 300, 92, {
+                pos: [163, 0], style: 'secondary', fontSize: FONT.h2, radius: RADIUS.lg,
+            }),
+        ],
     });
 
-    return [bg, header, seatTop, vs, seatBottom, status, btnReady, btnLeave, overlay];
+    return [bg, header, seatTop, vs, seatBottom, status, btnBar, overlay];
 }
 
 /** 座位卡：白底 + 1px 边 + 左侧 6px 色条（扁平的身份标识）。 */
@@ -454,7 +568,7 @@ function makeSeat(name, who, y, accentHex) {
 // Game 场景 —— 对局
 // =====================================================================
 function gameTree() {
-    const bg = fillNode('Bg', DESIGN_W, DESIGN_H, C.bg);
+    const bg = fullBleedNode('Bg', C.bg);
     const overlay = overlayNode();
 
     // ---- 顶部 HUD：对手行 / 我方行 / 状态行（白底 + 底部 1px 分隔线）----
@@ -470,13 +584,15 @@ function gameTree() {
     //     Hud/TurnLabel（回合）  Hud/TimerLabel（倒计时）
     //     Hud/HeadsLabel（寻机头专用：已找到机头 n/5）
     //     Hud/OppTurnMark / Hud/MyTurnMark（回合高亮圆点，◆ 当前回合）
+    // 竖版自适应：HUD 贴顶（Widget），不再写死 HUD_Y = 512。
+    // 容器锚在顶边（anchor y=1），子节点坐标以容器**中心**为原点 ——
+    // 因此下面的 ±HUD_H/2 偏移量保持不变，只是整体落位改由 Widget 决定。
     const HUD_H = 248;
-    const HUD_Y = 512;
     /** 左右两栏中心（画布宽 720，留 gutter 32 → 内容 656；每栏 328） */
     const COL_L = -164;
     const COL_R = 164;
-    const hud = fillNode('Hud', DESIGN_W, HUD_H, C.surface, {
-        pos: [0, HUD_Y],
+    const hud = topBarNode('Hud', HUD_H, C.surface, {
+        borderWidth: 0,
         children: [
             dividerNode('HudDivider', DESIGN_W, { pos: [0, -HUD_H / 2] }),
 
@@ -544,9 +660,10 @@ function gameTree() {
     });
 
     // ---- 底部操作栏：白底 + 顶部 1px 分隔线，三个等宽按钮 ----
+    // 贴底（Widget）—— 原先写死 pos.y = -DESIGN_H/2 + BAR_H/2
     const BAR_H = 168;
-    const bar = fillNode('ActionBar', DESIGN_W, BAR_H, C.surface, {
-        pos: [0, -DESIGN_H / 2 + BAR_H / 2],
+    const bar = bottomBarNode('ActionBar', BAR_H, C.surface, {
+        borderWidth: 0,
         children: [
             dividerNode('ActionBarDivider', DESIGN_W, { pos: [0, BAR_H / 2] }),
             buttonNode('BtnEmote', '表情', 200, 84, { pos: [-222, 0], style: 'secondary', fontSize: FONT.body, radius: RADIUS.lg }),
