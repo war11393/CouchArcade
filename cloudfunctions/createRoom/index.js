@@ -6,8 +6,8 @@
  * 服务端职责：
  * 1. 生成唯一 6 位房间号（冲突时重试）；
  * 2. 创建者坐 0 号位并成为房主；
- * 3. practice=true（AI 练习）时不建议走此云函数（应由客户端本地开展以省资源），
- *    但此处保留支持以便统计。
+ * 3. practice=true（AI 练习）时，**建库即填入 AI 座位并置 ready** ——
+ *    否则 startGame 的 allSeated/allReady 校验必然失败（详见座位构造处注释）。
  */
 
 const {
@@ -30,6 +30,14 @@ const PLAYER_COUNT = {
 
 /** 房间号最大重试次数。 */
 const MAX_ROOM_ID_RETRY = 10;
+
+/**
+ * AI 对手昵称池（与客户端 AppConfig.MOCK_OPPONENT_NICKNAMES 保持一致）。
+ *
+ * ⚠️ 服务端不 import 客户端代码（云函数是独立部署的 JS），只能这样成对维护。
+ * 改一边必须改另一边 —— `tools/test-cloud-ai-seat.js` 会断言两处一致。
+ */
+const AI_NICKNAMES = ['机头猎手', '五子小王子', '摸鱼达人', '路人甲', '深夜棋手'];
 
 exports.main = wrap('createRoom', async function (ctx, event) {
     const gameId = event.gameId;
@@ -88,6 +96,34 @@ exports.main = wrap('createRoom', async function (ctx, event) {
             aiLevel: aiLevel,
             score: 0,
         });
+    }
+
+    // AI 练习房：**建库时就把对手座位填成 AI 并置 ready**。
+    //
+    // 为什么必须在建库时做（这是「AI 练习点了没反应」的根因）：
+    //   startGame 的开门条件是 allSeated && allReady（见 startGame/index.js）。
+    //   以前 createRoom 对 practice 只写了 isPractice=true，其余座位仍是
+    //   playerId='' 的**空位** —— 于是客户端一进房就自动开局，服务端必然
+    //   抛「需全员入座并准备后才能开始」，且房主手动点「准备」也救不了
+    //   （空位不会因为房主准备而变成 AI），表现为「进房卡死、无法开局」。
+    //   AI 座位由**服务端**落库（不放客户端），这样 ready/startGame 的
+    //   判定在服务端自洽，且联机房不受影响。
+    if (practice) {
+        for (let i = 1; i < maxPlayers; i++) {
+            seats[i] = {
+                seatIndex: i,
+                playerId: 'ai-' + roomId + '-' + i,
+                nickname: AI_NICKNAMES[(i - 1) % AI_NICKNAMES.length],
+                avatarUrl: '',
+                // ⚠️ ready 必须为 true：AI 不会自己点准备
+                ready: true,
+                online: true,
+                isOwner: false,
+                isAI: true,
+                aiLevel: aiLevel,
+                score: 0,
+            };
+        }
     }
 
     const room = {

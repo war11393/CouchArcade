@@ -58,14 +58,41 @@ exports.main = wrap('startGame', async function (ctx, event) {
         throw new BizError(ERR.ROOM_ALREADY_STARTED, '本局已结束，请创建新房间');
     }
 
+    // 入座 + 准备校验。
+    //
+    // ⚠️ AI 座位（isAI=true）与**练习房的房主自己**都视为「无需准备」：
+    //    · AI 座位：playerId 由服务端建房时写入、ready 由服务端置 true，
+    //      显式放行 `isAI` 是为了兼容**历史房间**（本次修复前创建、
+    //      AI 座位 ready=false 的旧数据），避免它们永远开不了局；
+    //    · 练习房房主：AI 练习是「一个人和 AI 打」，房主进屋就该能开局，
+    //      不该被迫先点一次「准备」。这与客户端 Mock 参考实现一致
+    //      （MockRoomService.createRoom 给练习房直接置 READY，
+    //       房主座位始终 ready=false 也能开局），
+    //      否则两端行为不一致 —— 真机卡死、Mock 正常，最难查的那种。
+    //    联机房不受影响：真人座位依然必须 ready。
     const allSeated = room.seats.every(function (s) {
         return !!s.playerId;
     });
     const allReady = room.seats.every(function (s) {
-        return !!s.playerId && s.ready;
+        if (!s.playerId) return false;
+        if (s.isAI) return true;
+        if (room.isPractice && s.seatIndex === 0) return true; // 练习房房主免准备
+        return !!s.ready;
     });
     if (!allSeated || !allReady) {
-        throw new BizError(ERR.NOT_ALL_READY, '需全员入座并准备后才能开始');
+        // 把**到底是哪个座位**卡住了打进错误与日志 —— 上次定位这个问题
+        // 花了很久，就是因为只有一句笼统的「需全员入座并准备」。
+        const brief = room.seats
+            .map(function (s, i) {
+                return `#${i} ${s.nickname || '(空)'}${s.isAI ? '[AI]' : ''}` +
+                    ` playerId=${s.playerId ? 'Y' : 'N'} ready=${s.ready ? 'Y' : 'N'}`;
+            })
+            .join(' | ');
+        console.warn(`[startGame] room=${roomId} 开局被拦：${brief}`);
+        throw new BizError(
+            ERR.NOT_ALL_READY,
+            '需全员入座并准备后才能开始' + (allSeated ? '（有人未准备）' : '（有座位空缺）'),
+        );
     }
 
     const seed = genSeed();

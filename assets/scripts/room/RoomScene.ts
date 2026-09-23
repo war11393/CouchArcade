@@ -56,6 +56,8 @@ export class RoomScene extends Component {
     private _myReady = false;
     private _isOwner = false;
     private _entered = false;
+    /** 开局请求进行中（防止 watch 重复推送触发并发 startRoom）。 */
+    private _starting = false;
 
     protected async onLoad(): Promise<void> {
         console.log('[RoomScene] onLoad 开始');
@@ -212,12 +214,19 @@ export class RoomScene extends Component {
         // 满足开局条件 → 直接开局（READY 后自动进入对局）。
         // ⚠️ 判定顺序很重要：练习房（isPractice）与「我 = 房主 + READY」都要放行，
         //    且必须排除已 PLAYING（否则状态推送会重复开局）。
+        //
+        // ⚠️ 练习房额外要求「全员入座」：以前只要 isPractice=true 就无条件开局，
+        //    而 AI 座位是**服务端建房时**才填入的 —— 若建库/推送时序有偏差，
+        //    就会对着一个还有空位的房间狂调 startGame，每次都被服务端拒绝
+        //    （表现为「进房就报错、无法开局」）。先确认座位齐了再开局，
+        //    既不空转也能在 AI 座位就位后的那次推送里正常开局。
+        const allSeated = state.seats.every((s) => s.playerId !== '');
         const canAutoStart =
             this._isOwner &&
             state.status !== RoomStatus.PLAYING &&
             state.status !== RoomStatus.FINISHED &&
             state.status !== RoomStatus.DISSOLVED &&
-            (state.status === RoomStatus.READY || state.isPractice);
+            (state.status === RoomStatus.READY || (state.isPractice && allSeated));
         if (canAutoStart) {
             console.log(
                 `[RoomScene] 满足自动开局条件（房主 + status=${state.status} isPractice=${state.isPractice}）→ 触发 _onStart`,
@@ -277,13 +286,28 @@ export class RoomScene extends Component {
             this._myReady ? '取消准备' : '准  备',
         );
 
+        // 「能不能开局」= 房主 + 非对局中 + 练习房或全员就绪。
+        //
+        // ⚠️ 旧实现在练习房里只要 isPractice=true 就恒报 canStart=true，
+        //    连「有座位空缺」都报 true —— 上一轮排查「AI 练习无法开局」时
+        //    这条日志直接把方向带偏（它说可开局，服务端却拒了）。
+        //    现在按**座位真实就绪情况**判定，与服务端 startGame 的
+        //    allSeated && (ready || isAI || 练习房房主) 保持同一口径。
+        //    AI 座位视为就绪（AI 不会自己点准备）；练习房房主免准备。
+        const allSeated = state.seats.every((s) => s.playerId !== '');
+        const allReady = state.seats.every(
+            (s) => s.playerId !== '' && (s.ready || s.isAI || (state.isPractice && s.seatIndex === 0)),
+        );
         const canStart =
             this._isOwner &&
-            (state.status === RoomStatus.READY || state.isPractice) &&
-            state.status !== RoomStatus.PLAYING;
+            state.status !== RoomStatus.PLAYING &&
+            state.status !== RoomStatus.FINISHED &&
+            state.status !== RoomStatus.DISSOLVED &&
+            (state.isPractice ? allSeated : allReady);
 
         console.log(
-            `[RoomScene] 按钮刷新：房主=${this._isOwner} 可开局=${canStart} 状态=${state.status} 我已准备=${this._myReady}`,
+            `[RoomScene] 按钮刷新：房主=${this._isOwner} 可开局=${canStart} 状态=${state.status}` +
+                ` 我已准备=${this._myReady} 全员入座=${allSeated} 全员就绪=${allReady} isPractice=${state.isPractice}`,
         );
     }
 
@@ -315,6 +339,18 @@ export class RoomScene extends Component {
             console.log('[RoomScene] _onStart 跳过（已进入过对局）');
             return;
         }
+        // 开局请求进行中：直接跳过。
+        //
+        // 为什么需要这道闸：room watch 会在每次文档变更时推快照，而真机日志
+        // 显示同一个 waiting 快照会被推两次 —— 两次 _onStart 并发时
+        // **各自都还在 await 中、_entered 尚未置位**，于是重复调用 startGame
+        // （日志里「开局失败」出现两次就是同一原因）。重复调用本身对服务端
+        // 是幂等的，但会让错误 toast 弹两次、并放大竞态。
+        if (this._starting) {
+            console.log('[RoomScene] _onStart 跳过（开局请求进行中）');
+            return;
+        }
+        this._starting = true;
         console.log('[RoomScene] _onStart：调用 startRoom…');
         try {
             await services.room.startRoom();
@@ -328,6 +364,10 @@ export class RoomScene extends Component {
         } catch (err) {
             console.error('[RoomScene] 开局失败:', err);
             uiManager.toast(`${(err as Error).message}`, undefined);
+        } finally {
+            // 失败后允许重试（例如另一个人刚入座再点开始）；成功路径由
+            // _entered 兜住，不会因重进而重复切场景。
+            this._starting = false;
         }
     }
 

@@ -28,15 +28,24 @@ exports.main = wrap('ready', async function (ctx, event) {
     const seats = room.seats.slice();
     seats[idx] = Object.assign({}, seats[idx], { ready: ready, online: true });
 
+    // AI 座位一律视为就绪（服务端建房时已置 ready=true；这里再兜一层，
+    // 兼容历史房间的 ready=false 数据）。
+    //
+    // ⚠️ 练习房（isPractice）**必须直接置 READY**：AI 不会点准备，
+    //    若走通用的 allReady 判定，房主一旦取消准备就会把房间打回 WAITING，
+    //    随之而来的是「自动开局 → startGame 被拦」的循环死锁。
+    //    （客户端 MockRoomService._refreshReadyStatus 有同样的兜底逻辑。）
     const allSeated = seats.every(function (s) {
         return !!s.playerId;
     });
     const allReady = seats.every(function (s) {
-        return !!s.playerId && s.ready;
+        return !!s.playerId && (s.ready || !!s.isAI);
     });
 
     let status = room.status;
-    if (allSeated && allReady) {
+    if (room.isPractice) {
+        status = room.status === ROOM_STATUS.PLAYING ? room.status : ROOM_STATUS.READY;
+    } else if (allSeated && allReady) {
         status = ROOM_STATUS.READY;
     } else if (room.status === ROOM_STATUS.READY) {
         // 有人取消准备 → 回到等待
