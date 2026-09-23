@@ -196,6 +196,15 @@ export class GameScene extends Component {
         bindClick(this.node, 'Canvas/ActionBar/BtnEmote', () => this._toggleEmotePanel());
         bindClick(this.node, 'Canvas/ActionBar/BtnRestart', () => this._onRestart());
         bindClick(this.node, 'Canvas/ActionBar/BtnLeaveGame', () => this._onSurrender());
+
+        // ---- 短屏护栏（竖版自适应）----
+        // 内容带 = Hud(248) 与 ActionBar(168) 之间的安全区竖带。
+        // 基准机型（720×1280）放不下才动作（放得下零改动），iPad 竖屏
+        // designH≈960 时：棋盘收缩 → GomokuBoard/PlaneHuntBoard 在
+        // _createGame 里复制 BoardArea 的实际尺寸，cellSize 随高度收缩。
+        // **必须在 _createGame 之前**执行，否则棋盘按旧尺寸绘制。
+        if (this._boardNode) portraitAdapter.fitNodeInBand(this._boardNode, 248, 168);
+        if (this._emotePanel) portraitAdapter.fitNodeInBand(this._emotePanel, 248, 168);
     }
 
     /** 给表情面板里的按钮绑定点击（静态场景里表情项是 EmoteList 文本，

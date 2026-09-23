@@ -26,7 +26,7 @@
  *        └─ Camera                   [cc.Camera]
  */
 
-import { _decorator, Component, Label, Node } from 'cc';
+import { _decorator, Component, Label, Node, UITransform } from 'cc';
 import { AppConfig } from '../config/AppConfig';
 import { GameMeta, getSortedGameList } from '../config/GameList';
 import { services, ensureServices } from '../core/ServiceLocator';
@@ -115,6 +115,32 @@ export class LobbyScene extends Component {
 
         // 兜底：确保 content 存在（ScrollView 的 content 引用否则为空）
         requireNode(this.node, 'Canvas/GameList/view/content');
+
+        // ---- 短屏护栏（竖版自适应）----
+        // 列表带 = Header(152) 与 Footer(96) 之间的安全区竖带。
+        // 放得下 ⇒ 零改动（基准机型即此分支）；放不下才收缩 + 拉回带内。
+        // GameList 与 view 必须同步收缩（一个是触摸区，一个是 Mask 裁剪区）。
+        const band = portraitAdapter.band(152, 96);
+        const bandH = band.top - band.bottom;
+        const list = findNode(this.node, 'Canvas/GameList');
+        const viewNode = findNode(this.node, 'Canvas/GameList/view');
+        if (list && viewNode) {
+            const listT = list.getComponent(UITransform);
+            const viewT = viewNode.getComponent(UITransform);
+            if (listT && viewT) {
+                const half = listT.height / 2;
+                const cy = list.position.y;
+                if (cy + half > band.top || cy - half < band.bottom) {
+                    if (listT.height > bandH) {
+                        listT.height = bandH;
+                        viewT.height = bandH;
+                    }
+                    const nh = listT.height / 2;
+                    const nc = Math.min(Math.max(cy, band.bottom + nh), band.top - nh);
+                    list.setPosition(list.position.x, nc, 0);
+                }
+            }
+        }
     }
 
     /** 选择游戏后，显示模式选择（创建房间 / 加入房间 / AI 练习）。 */

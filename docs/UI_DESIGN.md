@@ -95,6 +95,14 @@ view.setDesignResolutionSize(designW, designH, FIXED_WIDTH)
 2. **中部内容件以「可视区中心」为原点书写，允许 ± 少量漂移**
    短屏（如 16:9，designH≈1280）下它们与旧版像素级一致；
    长屏下上下留白自然变大，而不是内容错位。
+3. **短屏护栏（portraitAdapter.band / fitNodeInBand / fitBlockInBand）**
+   「可视区中心书写」有一个反方向缺口：比基准**更矮**的机型（iPad 竖屏
+   designH≈960）会让固定高的内容越出上下贴边条之间。护栏在每个场景
+   onLoad 里做一次收敛：带子（安全区内、让出上下贴边条后）放得下 ⇒
+   **零改动**（基准与全部长屏机型即此分支，回归安全）；放不下 ⇒
+   平移或等比收缩回带内（Lobby 列表收缩 view+GameList 同步、Game 棋盘
+   收缩后 cellSize 随父容器重算、Room 座位列先平移不够再压缩）。
+   行为契约由 `tools/test-portrait-guards.js` 数值仿真守护（check-all 第 5 层）。
 
 Canvas 中心为原点（`y=±designH/2` 顶/底边）。下表里的 `y=+640 / y=-640`
 只在 720×1280 基准机型上成立。

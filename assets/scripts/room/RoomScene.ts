@@ -24,8 +24,9 @@
  *        ├─ VsLabel            [cc.Label]
  *        ├─ SeatBottom         [cc.Graphics]     ← 自己
  *        │   ├─ SeatName / SeatStatus / SeatScore [cc.Label]
- *        ├─ BtnReady           [cc.Button] → BtnReadyLabel
- *        ├─ BtnLeave           [cc.Button] → BtnLeaveLabel
+ *        ├─ BtnBar               [贴底容器 cc.Widget]
+ *        │   ├─ BtnReady           [cc.Button] → BtnReadyLabel
+ *        │   └─ BtnLeave           [cc.Button] → BtnLeaveLabel
  *        ├─ SceneRoot          [RoomScene]   ← 本脚本
  *        └─ Camera             [cc.Camera]
  */
@@ -110,6 +111,17 @@ export class RoomScene extends Component {
         setLabelText(this.node, 'Canvas/SeatBottom/SeatName', '等待加入…');
         setLabelText(this.node, 'Canvas/SeatBottom/SeatStatus', '空位');
         setLabelText(this.node, 'Canvas/BtnBar/BtnReady/BtnReadyLabel', '准  备');
+
+        // ---- 短屏护栏（竖版自适应）----
+        // 「座位卡 + VS + 状态」是一列整体：基准机型放得下 ⇒ 零改动；
+        // 矮屏则整列平移到 Header(152) 与 BtnBar(200) 之间带的中心
+        //（只平移不改尺寸，列内间距保持设计值）。
+        const column = ['Canvas/SeatTop', 'Canvas/VsLabel', 'Canvas/SeatBottom', 'Canvas/Status']
+            .map((p) => findNode(this.node, p))
+            .filter((n): n is Node => !!n);
+        if (column.length === 4) {
+            portraitAdapter.fitBlockInBand(column, 152, 200);
+        }
     }
 
     // ==================== 房间逻辑 ====================

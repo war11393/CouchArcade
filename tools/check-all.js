@@ -13,8 +13,9 @@
  *   2. test-core（游戏核心算法：五子棋 / 寻机头）
  *   3. test-auth-fallback（登录三级兜底，不卡加载页）
  *   4. test-cloud-envelope（云函数信封双重包装，含反例）
- *   5. validate-scenes（场景结构与运行时节点层级护栏）
- *   6. 云函数 common.js 9 份副本一致性（微信云函数不支持跨目录 require）
+ *   5. test-portrait-guards（竖版自适应短屏护栏数值仿真）
+ *   6. validate-scenes（场景结构 / 路径契约 / 设计令牌）
+ *   7. 云函数 common.js 副本一致性
  */
 
 const { execFileSync } = require('child_process');
@@ -45,6 +46,7 @@ const steps = [
     { name: 'test-core（游戏核心算法）', run: () => node('test-core.js') },
     { name: 'test-auth-fallback（登录兜底）', run: () => node('test-auth-fallback.js') },
     { name: 'test-cloud-envelope（云函数信封）', run: () => node('test-cloud-envelope.js') },
+    { name: 'test-portrait-guards（竖版护栏仿真）', run: () => node('test-portrait-guards.js') },
     { name: 'validate-scenes（场景校验）', run: () => node('validate-scenes.js') },
     {
         name: '云函数 common.js 副本一致性',

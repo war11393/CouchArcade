@@ -51,7 +51,7 @@
  * 本模块**只做计算与写分辨率**，不持有任何节点引用，可被任意场景安全复用。
  */
 
-import { Node, screen, sys, view, Widget, ResolutionPolicy } from 'cc';
+import { Node, screen, sys, view, UITransform, Widget, ResolutionPolicy } from 'cc';
 import { AppConfig } from '../config/AppConfig';
 import { services } from './ServiceLocator';
 
@@ -349,6 +349,79 @@ export class PortraitAdapter {
     }
 
     // ==================== 便捷查询（供场景排布使用） ====================
+
+    /**
+     * 中部内容的「可用竖带」：安全区内边缘再让出上下贴边条的高度。
+     *
+     * reserveTop / reserveBottom 传贴边条高度（Header 152 / Hud 248 /
+     * ActionBar 168 / BtnBar 200 / Footer 96 …）。
+     */
+    public band(reserveTop: number, reserveBottom: number): { top: number; bottom: number } {
+        const L = this.layout;
+        return {
+            top: L.safeTopY - reserveTop,
+            bottom: L.safeBottomY + reserveBottom,
+        };
+    }
+
+    /**
+     * 把一个节点纵向收进上下带之间：**放得下就不动**，放不下才收缩 + 夹位。
+     *
+     * 语义保证：基准机型（720×1280，原设计即按它书写）永远命中「放得下」
+     * 分支 ⇒ 零改动；只有更矮的机型（如 iPad 竖屏 designH≈960）才会被收缩。
+     */
+    public fitNodeInBand(node: Node, reserveTop: number, reserveBottom: number): void {
+        const ut = node.getComponent(UITransform);
+        if (!ut) return;
+        const { top, bottom } = this.band(reserveTop, reserveBottom);
+        const half = ut.height / 2;
+        const cy = node.position.y;
+        if (cy + half <= top && cy - half >= bottom) return; // 放得下：原样保留
+        const avail = Math.max(120, top - bottom);
+        ut.height = Math.min(ut.height, avail);
+        const nh = ut.height / 2;
+        const nc = ut.height >= avail
+            ? (top + bottom) / 2                    // 收缩到刚好填满带子 → 居中
+            : Math.min(Math.max(cy, bottom + nh), top - nh); // 只是出界 → 拉回带内
+        node.setPosition(node.position.x, nc, node.position.z);
+    }
+
+    /**
+     * 把一组节点当作整体收进上下带之间：**先平移，放不下再按比例压缩**。
+     *
+     * 用于 Room 的「座位卡 + VS + 状态」列：
+     *   · 整体放得下 → 零改动（基准机型即此分支）；
+     *   · 出界但带子装得下列总高 → 整列平移到带中心（间距不变）；
+     *   · 带子比列总高还矮（iPad 竖屏 designH≈960）→ 各节点高度与相对
+     *     间距按同一比例 s 压缩（卡片内子节点偏移 ±50 < 压缩后半高 91，
+     *     不会被顶出卡片），保证「任何比例都无重叠」。
+     */
+    public fitBlockInBand(nodes: Node[], reserveTop: number, reserveBottom: number): void {
+        const measured: Array<{ n: Node; ut: UITransform; h: number; cy: number }> = [];
+        for (const n of nodes) {
+            const ut = n.getComponent(UITransform);
+            if (!ut) return;
+            measured.push({ n, ut, h: ut.height, cy: n.position.y });
+        }
+        if (measured.length === 0) return;
+        let topEdge = -Infinity;
+        let bottomEdge = Infinity;
+        for (const m of measured) {
+            topEdge = Math.max(topEdge, m.cy + m.h / 2);
+            bottomEdge = Math.min(bottomEdge, m.cy - m.h / 2);
+        }
+        const { top, bottom } = this.band(reserveTop, reserveBottom);
+        if (topEdge <= top && bottomEdge >= bottom) return; // 放得下：原样保留
+        const blockCenter = (topEdge + bottomEdge) / 2;
+        const totalH = topEdge - bottomEdge;
+        const bandH = top - bottom;
+        const s = Math.min(1, bandH / totalH); // 列比带子高才压缩
+        const center = (top + bottom) / 2;
+        for (const m of measured) {
+            m.ut.height = Math.max(24, Math.round(m.h * s));
+            m.n.setPosition(m.n.position.x, center + (m.cy - blockCenter) * s, m.n.position.z);
+        }
+    }
 
     /**
      * 把安全区避让推给场景里「贴边条」的 Widget（Header/Footer/Hud/ActionBar/BtnBar）。
