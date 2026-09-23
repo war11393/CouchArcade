@@ -15,9 +15,10 @@
  *   4. test-cloud-envelope（云函数信封双重包装，含反例）
  *   5. test-cloud-ai-seat（AI 练习房「开局被拦」回归，含修复前反例）
  *   6. test-result-dialog（结算弹窗无灰蒙版 + 拦截层不变式）
- *   7. test-portrait-guards（竖版自适应短屏护栏数值仿真）
- *   8. validate-scenes（场景结构 / 路径契约 / 设计令牌）
- *   9. 云函数 common.js 副本一致性
+ *   7. test-thinking-overlay（「对手思考中」遮罩：共用基类 + 挡点击 + UI_2D 层）
+ *   8. test-portrait-guards（竖版自适应短屏护栏数值仿真）
+ *   9. validate-scenes（场景结构 / 路径契约 / 设计令牌）
+ *  10. 云函数 common.js 副本一致性
  */
 
 const { execFileSync } = require('child_process');
@@ -50,6 +51,7 @@ const steps = [
     { name: 'test-cloud-envelope（云函数信封）', run: () => node('test-cloud-envelope.js') },
     { name: 'test-cloud-ai-seat（AI 练习开局）', run: () => node('test-cloud-ai-seat.js') },
     { name: 'test-result-dialog（结算弹窗无蒙版）', run: () => node('test-result-dialog.js') },
+    { name: 'test-thinking-overlay（对手思考中遮罩）', run: () => node('test-thinking-overlay.js') },
     { name: 'test-portrait-guards（竖版护栏仿真）', run: () => node('test-portrait-guards.js') },
     { name: 'validate-scenes（场景校验）', run: () => node('validate-scenes.js') },
     {

@@ -10,8 +10,20 @@
  * 规则判定一律由各游戏的纯逻辑类完成。
  */
 
-import { Color, Graphics, Node, UITransform, Vec3, view } from 'cc';
+import { BlockInputEvents, Color, Graphics, Label, Node, UITransform, Vec3, view } from 'cc';
 import { AppConfig } from '../../config/AppConfig';
+import { THEME } from '../../config/UITheme';
+import { newUINode } from '../../core/UIFactory';
+
+/**
+ * 「对手思考中」蒙层底色：深色 + 低 alpha。
+ *
+ * 取 PALETTE.overlay(#10131A) 的同一基色，alpha 用 90 —— 比结算弹窗的
+ * 140 更轻，因为这里是「短暂等待」而非「需要专注的决策」，
+ * 太重会让棋盘看起来像被关掉了。
+ * 注意：棋盘/面板是白底，所以蒙层必须是**深色**才压得住（用白色会看不见）。
+ */
+const THINKING_OVERLAY_COLOR = new Color(16, 19, 26, 90);
 
 /** 棋盘布局计算结果。 */
 export interface BoardLayout {
@@ -42,6 +54,8 @@ export abstract class BoardBase {
     protected _layout: BoardLayout;
     /** 交互是否启用（非自己回合时禁止点击）。 */
     protected _interactive = true;
+    /** 「对手思考中」遮罩节点（懒建，见 ensureThinkingOverlay）。 */
+    protected _thinkingOverlay: Node | null = null;
 
     constructor(rows: number, cols: number) {
         this._rows = rows;
@@ -298,6 +312,108 @@ export abstract class BoardBase {
         g.fillColor = color;
         g.rect(x, y, w, h);
         g.fill();
+    }
+
+    // ==================== 「对手思考中」遮罩（两款游戏共用） ====================
+
+    /**
+     * 创建/更新「对手思考中」遮罩。
+     *
+     * 为什么做成遮罩而不是一行裸文字（原来的实现）：
+     *   · 裸文字直接压在棋盘网格上，视觉上很突兀，还容易被误读成棋盘的一部分；
+     *   · 更重要的是**它挡不住点击** —— 等待对手期间点到棋盘会被
+     *     hitTest 命中并发出请求，服务端回一个「还没轮到你落子」的报错。
+     *
+     * 现在的形态：半透明暗色蒙层 + 居中白色胶囊标签。
+     *   · 蒙层挂在棋盘容器（_root.parent）上并铺满它 —— 这样能连同棋盘
+     *     周围的留白一起盖住，而不只是棋盘格子区域；
+     *   · 蒙层自带 BlockInputEvents，等待期间点击不会穿透；
+     *   · 标签用白底 + 深色字（棋盘区域是白底，透明底文字会看不清）。
+     *
+     * 幂等：重复调用只更新显隐，不重复建节点。
+     * 层级安全：所有节点都用 newUINode（UI_2D 层）—— 默认 DEFAULT 层的
+     * 节点相机看不见、也收不到点击（本项目踩过的坑）。
+     */
+    protected ensureThinkingOverlay(): void {
+        if (this._thinkingOverlay || !this._root) {
+            return;
+        }
+        const host = this._root.parent ?? this._root;
+        const hostT = host.getComponent(UITransform);
+        const w = hostT ? hostT.width : (this._root.getComponent(UITransform)?.width ?? 600);
+        const h = hostT ? hostT.height : (this._root.getComponent(UITransform)?.height ?? 600);
+
+        // 蒙层（暗色半透明，铺满宿主）
+        const overlay = newUINode('ThinkingOverlay');
+        host.addChild(overlay);
+        const ot = overlay.addComponent(UITransform);
+        ot.setContentSize(w, h);
+        const og = overlay.addComponent(Graphics);
+        og.fillColor = THINKING_OVERLAY_COLOR;
+        og.rect(-w / 2, -h / 2, w, h);
+        og.fill();
+        // 挡住等待期间的误触（没有它，点击会穿透到棋盘触发「还没轮到你」）
+        overlay.addComponent(BlockInputEvents);
+        overlay.setPosition(new Vec3(0, 0, 0));
+
+        // 居中胶囊标签（白底 + 深色字）
+        const chip = newUINode('ThinkingChip');
+        overlay.addChild(chip);
+        const cw = 300;
+        const ch = 76;
+        const ct = chip.addComponent(UITransform);
+        ct.setContentSize(cw, ch);
+        const cg = chip.addComponent(Graphics);
+        const r = ch / 2; // 胶囊
+        cg.fillColor = THEME.surface;
+        cg.roundRect(-cw / 2, -ch / 2, cw, ch, r);
+        cg.fill();
+        cg.lineWidth = 1;
+        cg.strokeColor = THEME.border;
+        cg.roundRect(-cw / 2, -ch / 2, cw, ch, r);
+        cg.stroke();
+        chip.setPosition(new Vec3(0, 0, 0));
+
+        const label = newUINode('ThinkingLabel');
+        chip.addChild(label);
+        const lt = label.addComponent(UITransform);
+        lt.setContentSize(cw - 24, 40);
+        const lb = label.addComponent(Label);
+        lb.string = '对手思考中…';
+        lb.fontSize = 28;
+        lb.color = THEME.text;
+        // 与 Static 场景标签一致的水平/垂直居中
+        lb.horizontalAlign = Label.HorizontalAlign.CENTER;
+        lb.verticalAlign = Label.VerticalAlign.CENTER;
+
+        overlay.active = false;
+        this._thinkingOverlay = overlay;
+    }
+
+    /**
+     * 显隐「对手思考中」遮罩（两款游戏统一入口）。
+     *
+     * 同时把棋盘交互置为 `!show` —— 等待对手时禁用输入，双保险：
+     * 即使遮罩的点击拦截被将来的改动破坏，业务层也不会发出越权请求。
+     */
+    public showThinking(show: boolean): void {
+        this.ensureThinkingOverlay();
+        if (!this._thinkingOverlay) {
+            return;
+        }
+        this._thinkingOverlay.active = show;
+        this._interactive = !show;
+        // 遮罩出现时压在棋盘之上（同父节点内排在最后）
+        if (show) {
+            this._thinkingOverlay.setSiblingIndex(
+                (this._thinkingOverlay.parent?.children.length ?? 1) - 1,
+            );
+        }
+    }
+
+    /** 遮罩当前是否显示（调试/测试用）。 */
+    public get thinkingVisible(): boolean {
+        return !!this._thinkingOverlay && this._thinkingOverlay.active;
     }
 
     /**

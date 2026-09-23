@@ -73,6 +73,22 @@ export class WxNetSyncService implements INetSyncService {
 
         this._openWatch();
 
+        // ⚠️ 必须显式置 CONNECTED —— 这是「点了棋盘没有落子」的直接原因。
+        //
+        // send() 的第一道闸是 `if (this._status !== NetStatus.CONNECTED) return;`
+        // 而本函数原先只置了 CONNECTING、然后直接打「已连接」日志就返回了，
+        // 于是**永远停在 CONNECTING**：每一次落子/翻牌请求都被静默丢弃，
+        // 控制台只留下一行「未连接，忽略发送: gk.move」，
+        // 界面则卡在「对手思考中…」（因为 showThinking(true) 之后再也等不到下行）。
+        //
+        // 为什么能安全地立即置 CONNECTED：`_watchCollection` 是**同步**建立的
+        // （wx 的 watch 采用回调式，onChange 到达即代表通道可用），
+        // 不涉及 await 握手。真正的连接异常由 watch 的 onError 回调
+        // 置 RECONNECTING 兜底（见 _watchCollection）。
+        //
+        // 对照参考实现：MockNetSyncService.connect 在握手后同样会置 CONNECTED，
+        // 并且还会 flush 权威方的首手消息（见下方）。
+        this._setStatus(NetStatus.CONNECTED);
         console.log(`[WxNetSync] 已连接房间 ${roomId}（云数据库实时推送）`);
     }
 

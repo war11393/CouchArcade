@@ -23,7 +23,7 @@ import {
     Vec3,
 } from 'cc';
 import { AppConfig } from '../../config/AppConfig';
-import { BOARD, THEME, hexToColor } from '../../config/UITheme';
+import { BOARD, hexToColor } from '../../config/UITheme';
 import { newUINode } from '../../core/UIFactory';
 import { BoardBase } from '../common/BoardBase';
 import { GomokuRules, Stone } from './GomokuRules';
@@ -99,9 +99,8 @@ export class GomokuBoard extends Component {
     private _boardNode: Node | null = null;
     /** 棋子层容器。 */
     private _stoneLayer: Node | null = null;
-    /** 提示文字（「对手思考中…」）。 */
-    private _thinkingLabel: Label | null = null;
-    private _thinkingNode: Node | null = null;
+    // 注：原 _thinkingLabel / _thinkingNode 字段已移除 —— 思考提示改由
+    // BoardBase.showThinking() 的共用遮罩承担（见该方法的说明）。
     /** 渲染器。 */
     private readonly _renderer = new GomokuBoardRenderer();
     /** 棋子节点缓存：index = row*size+col → Node */
@@ -159,17 +158,9 @@ export class GomokuBoard extends Component {
         this.node.addChild(this._stoneLayer);
         this._stoneLayer.addComponent(UITransform);
 
-        // 思考提示
-        this._thinkingNode = newUINode('Thinking');
-        this.node.addChild(this._thinkingNode);
-        this._thinkingNode.addComponent(UITransform);
-        this._thinkingLabel = this._thinkingNode.addComponent(Label);
-        this._thinkingLabel.string = '对手思考中…';
-        this._thinkingLabel.fontSize = 28;
-        // 白底棋盘上必须用深色文字，否则不可见
-        this._thinkingLabel.color = THEME.textDim;
-        this._thinkingNode.setPosition(new Vec3(0, 0, 0));
-        this._thinkingNode.active = false;
+        // 思考提示：已改为 BoardBase 的共用遮罩（半透明蒙层 + 居中胶囊），
+        // 由 _renderer.showThinking() 懒建在棋盘容器上 —— 这里不再建裸 Label。
+        // （原先那行裸文字压在棋盘网格上，视觉突兀且挡不住点击。）
 
         // 绑定渲染器
         this._renderer.attach(this._boardNode);
@@ -231,11 +222,15 @@ export class GomokuBoard extends Component {
         this._renderer.setInteractive(v);
     }
 
-    /** 显示/隐藏「对手思考中」。 */
+    /**
+     * 显示/隐藏「对手思考中」。
+     *
+     * 实现已上移到共用基类 BoardBase（半透明蒙层 + 居中胶囊，并顺带禁用棋盘输入）——
+     * 原先这里是一行裸 Label 直接压在棋盘网格上，视觉突兀且挡不住点击。
+     * 保留本方法作为薄转发，是为了不动 GomokuGame 里的调用点。
+     */
     public showThinking(show: boolean): void {
-        if (this._thinkingNode) {
-            this._thinkingNode.active = show;
-        }
+        this._renderer.showThinking(show);
     }
 
     /** 棋盘布局描述（调试）。 */

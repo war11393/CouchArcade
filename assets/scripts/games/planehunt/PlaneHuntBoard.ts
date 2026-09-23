@@ -283,7 +283,15 @@ export class PlaneHuntBoard extends Component {
             .start();
     }
 
+    /**
+     * 显示/隐藏「对手思考中」（与五子棋统一走 BoardBase 的共用遮罩）。
+     *
+     * 原先这里只打日志、**什么都不显示** —— 寻机头等待对手时界面毫无反馈，
+     * 玩家会以为点漏了。现在与五子棋一致：半透明蒙层 + 居中胶囊，
+     * 并禁用棋盘输入（防止等待期间误点发出越权请求）。
+     */
     public showThinking(show: boolean): void {
+        this._renderer.showThinking(show);
         if (AppConfig.LOG_VERBOSE) {
             console.log(`[PlaneHuntBoard] 对手思考中: ${show}`);
         }
