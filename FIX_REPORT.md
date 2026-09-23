@@ -738,11 +738,105 @@ new PlaneHuntAuthority(
 
 ---
 
+## 第 9 轮：竖版自适应 + AI 练习真机跑通（一日 7 提交）
+
+**日期**：2026-09-23
+
+两大主题、7 个提交。按提交顺序：
+
+| 提交 | 内容 |
+| :--- | :--- |
+| `5c3d3d1` | 竖版机型自适应：固定 720×1280 → **运行期动态设计高 + Widget 贴边** |
+| `526e450` | 短屏护栏（iPad 类矮机型不再越界/重叠）+ 数值仿真测试 |
+| `972c717` | 对齐各处过时注释 / 自测清单（SafeAreaAdapter 标记已被取代） |
+| `f85d59b` | AI 练习房无法开局：createRoom 建库即填 AI 座位并置 ready |
+| `a1323e3` | AI 练习免准备直接进对局 + 结算弹窗去灰色蒙版 |
+| `4db85cf` | 真机无法落子（connect 漏置 CONNECTED）+「对手思考中」改半透明遮罩 |
+| `a46cdb3` | 方案 B：AI 决策搬到服务端，真机 AI 练习可完整对局 |
+
+### 9.1 竖版机型自适应（尺寸三层解耦）
+
+**症状**：小游戏尺寸写死「固定 720×1280 + fitWidth」，机型一变顶/底栏就
+浮离屏幕边缘，长屏上下露底色；`SafeAreaAdapter` 从未挂到任何场景。
+
+**方案**：宽度基准 720 不动（FIXED_WIDTH 语义、横向预算全部继续有效），
+**设计高运行期按机型实算**：`designH = round(720 × 屏幕高/宽)`。
+
+- 新增 `core/PortraitAdapter.ts`：重算分辨率 + 安全区换算（同源同单位铁律：
+  平台服务优先、引擎视口兜底，**禁止交叉混用**）+ `applyEdgeInsets()` 把
+  刘海/Home 条避让推给「只贴一条横边」的 Widget（背景类上下同贴不避让、
+  铺满刘海区）。
+- `tools/ui-trees.js` 新增 `fullBleedNode/topBarNode/bottomBarNode`
+  （cc.Widget 贴边），4 场景的 Bg/Header/Footer/Hud/ActionBar/BtnBar 全部
+  改贴边，不再写死 `y=±DESIGN_H/2`。**引擎依据（3.8.8 源码核实）**：
+  Canvas 与 WidgetManager 都监听 `design-resolution-changed`，自动重设
+  orthoHeight 并重排全部 Widget。
+- **短屏护栏**（反向缺口）：比基准更矮的机型（iPad 竖屏 designH≈960）
+  会让固定高中部内容越出贴边条。`band()/fitNodeInBand()/fitBlockInBand()`
+  语义是「**放得下 ⇒ 零改动**」（基准与全部长屏走此分支，回归安全），
+  放不下才平移/等比收缩回带内。
+- Loading 版本行显示**运行期实算** designH（真机一眼验证钩子）。
+- 校验器升级：重叠判定按 `_alignFlags` 把贴边件还原到参考机型落位再比较
+  （基准机型不重叠 ⇒ 更高机型只会更松）。
+
+**改结构 = 改路径契约**：贴边容器化后，Loading/Lobby/Room 三处控制器绑定
+路径与 REQUIRED_PATHS 必须同步（validate-scenes 的路径断言兜住了这点）。
+
+### 9.2 AI 练习真机跑通（三层独立 bug + 一个架构缺口）
+
+真机反馈「点了没反应 / 卡对手思考中 / 未连接忽略发送」。排查后是**三个
+互不相同的根因**，逐层剥开：
+
+1. **开局被拦**（`f85d59b`）：startGame 要求全员 ready，但 createRoom 对
+   practice 只写 `isPractice=true`、对手仍是空位 → 条件恒 false。
+   修：建库即填 AI 座位（`playerId=ai-*` + `isAI` + `ready:true`），
+   练习房房主免准备（与 Mock 参考实现同口径），历史房间数据兼容。
+2. **落子被静默丢弃**（`4db85cf`）：`WxNetSyncService.connect()` 只置
+   `CONNECTING`、日志已打「已连接」，**从未置 CONNECTED** → send() 状态闸
+   丢弃每一次请求。对照 Mock 实现 diff 即确诊。
+3. **AI 根本没实现**（`a46cdb3`，方案 B）：云函数只记录人类那一手，没有
+   AI 决策 —— AI 只在客户端且仅被 Mock 使用。修：
+   - 新增 `common/server-ai.js`：客户端 GomokuAi/PlaneHuntAi 的**逐行等价
+     移植**（差分测试 52 组随机局面逐位一致）；seed 派生随机源，可复现；
+   - gomoku_move / planehunt_flip 人类那手写库后**同函数内串行 AI 回手**
+     （天然幂等，无需定时器）；寻机头「翻中机头连翻」循环；
+   - 内存数据库桩顶替 wx-server-sdk、require 真实云函数跑 exports.main 的
+     **端到端仿真**（36 断言）抓到三个自埋坑：const 重赋值报 5000、
+     客户端 watch 契约字段（lastMove/flips）云函数从未写、
+     AI 读旧快照覆盖人类那格。
+
+### 9.3 UI 体验两处
+
+- 「对手思考中」从压在棋盘上的裸文字改为**半透明蒙层 + 居中胶囊**
+  （实现上移 BoardBase 两款游戏共用；顺带补齐寻机头此前**只打日志不显示**
+  的缺口；遮罩带 BlockInputEvents + 禁输入，修掉「等待期误点→被拒」）。
+- 结算弹窗去灰色蒙版：拦截层是白卡片的**父节点**且负责挡点击，不能删 ——
+  改「容器保留、alpha=0 不画底色」（`active=false` 会把卡片一起藏掉）。
+- AI 练习隐藏「准备」按钮、「离开」居中，文案不再引导已取消的步骤。
+
+### 本轮验证
+
+| 检查 | 结果 |
+| :--- | :--- |
+| `node tools/check-all.js` | ✅ **十二层全绿**（约 200 断言：typecheck / 核心52 / 登录兜底18 / 信封18 / AI开局34 / 服务端AI等价22 / **AI回手端到端36** / 结算弹窗10 / 思考遮罩15 / 竖版护栏仿真13 / 场景校验 / 副本一致性） |
+| `node tools/gen-scenes.js` + `validate-scenes.js` | ✅ 4 场景重新生成 |
+| 新增测试自身证伪 | ✅ 护栏仿真的反例断言（修复前必被拦）验证通过 |
+
+**诚实边界**：全部为自动校验 + 数值仿真 + 云函数桩仿真证据；
+**真机 / 微信开发者工具从未运行**（标签 `wechat-phase2-unverified` 持续标注）。
+生效需要：Creator **重新构建**（贴边/遮罩/免准备）+ 重新部署
+`gomoku_move`、`planehunt_flip` 等云函数（AI 回手 + server-ai.js 副本）。
+另：竖版自适应的 AI 回合等待时长（服务端同步回手，无 Mock 的 0.8~2s
+「思考感」）是方案 B 的已知表现差异，如需要可后续在云函数加延时或
+客户端补最小展示时长。
+
+---
+
 ## 配置概览
 
 | 参数 | 值 |
 | :--- | :--- |
-| 设计分辨率 | 720 × 1280（fitWidth=true, fitHeight=false） |
+| 设计分辨率 | 宽基准 720 + **高运行期按机型实算**（designH=720×屏比，PortraitAdapter）；启动初值 720×1280（fitWidth=true, fitHeight=false） |
 | 帧率 | 60 FPS |
 | 启动场景 | `db://assets/scenes/Loading.scene` |
 | 渲染管线 | 内置管线 `builtin-pipeline` |
