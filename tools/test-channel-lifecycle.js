@@ -131,6 +131,36 @@ console.log('\n场景 3：watch 下行必须真的推进「回执」信号（看
 }
 
 // ---------------------------------------------------------------------
+console.log('\n场景 3b：看门狗必须按「上行是否成功」分岔报错');
+{
+    // 为什么（2026-09-24 真实教训）：gomoku_move 因**云端缺依赖**直接抛
+    //   `-504002 Cannot find module 'wx-server-sdk'`，上行根本没成功，
+    //   但看门狗统一报「上行正常、下行断 → 去查集合权限」，把排查方向带偏。
+    //   本断言锁住：看门狗必须区分「上行失败」与「上行成功但无下行」。
+    const src = read('assets/scripts/core/services/wx/WxNetSyncService.ts');
+    check('_armWatchAckWatchdog 接收 upstreamOk 参数',
+        /_armWatchAckWatchdog\(name: string, upstreamOk: boolean\)/.test(src),
+        '没有该参数就无法区分两种失败');
+    check('调用处把上行结果传了进去',
+        /_armWatchAckWatchdog\(name, upstreamOk\)/.test(src),
+        '传了参数却没带进去，等于没分岔');
+    check('上行失败分支存在且提到 remote-npm-install',
+        /上行本身就失败了[\s\S]{0,400}remote-npm-install/.test(src),
+        '上行失败时必须明确指向「云端未安装依赖」这一最常见原因');
+    check('上行失败分支在「查集合权限」分支之前 return（不会两个都报）',
+        src.indexOf('上行本身就失败了') > 0 &&
+            src.indexOf('上行本身就失败了') < src.indexOf('必须设为「所有用户可读」'),
+        '顺序反了会让上行失败也去报集合权限');
+
+    const sabotaged = src.replace(/upstreamOk: boolean/, 'ignored: boolean')
+        .replace(/_armWatchAckWatchdog\(name, upstreamOk\)/, '_armWatchAckWatchdog(name, true)');
+    check('反例自证：去掉分岔后断言会失败',
+        !/upstreamOk: boolean/.test(sabotaged) &&
+            !/_armWatchAckWatchdog\(name, upstreamOk\)/.test(sabotaged),
+        '说明断言可证伪');
+}
+
+// ---------------------------------------------------------------------
 console.log('\n场景 4：客户端解析回合时优先用 lastMove.nextPlayerId');
 {
     const src = read('assets/scripts/core/services/wx/WxNetSyncService.ts');

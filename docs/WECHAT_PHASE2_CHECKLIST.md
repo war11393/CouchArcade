@@ -222,6 +222,34 @@ Cocos 构建会按优先级合并以下来源，**后者覆盖前者**：
 - [ ] `gomoku_move`
 - [ ] `settleGame`
 
+### 命令行等价物（推荐，带验证）
+
+DevTools 的 GUI 右键菜单**只能逐个点**，而命令行可以批量 + 自动验证：
+
+```bash
+# 部署（始终带 --remote-npm-install，即 GUI 的「云端安装依赖」）
+node tools/deploy-cloudfunctions.js                 # 全部
+node tools/deploy-cloudfunctions.js gomoku_move     # 指定
+node tools/deploy-cloudfunctions.js --list          # 只打印将执行的命令
+
+# 验证部署是否**真的生效**（下载云端代码，比对源码 + 检查 node_modules）
+node tools/deploy-cloudfunctions.js --verify
+```
+
+> 🔴 **`--remote-npm-install` 不能漏（2026-09-24 真机事故）**
+> 漏了它，CLI 只上传 4 个源码文件，**云端不装 `wx-server-sdk`**，函数一被调用就抛
+> `errCode: -504002 functions execute fail / Cannot find module 'wx-server-sdk'`
+> —— 而 `deploy` 的返回**依然是 `success: true`**，从返回值看不出来。
+>
+> 🔴 **更深的坑：「源码一致」≠「部署成功」**
+> 当时的验证是「download 回来逐字节比对」，源码完全一致就判定成功了 ——
+> 但源码传对了、依赖没装，函数照样跑不起来。**判断部署生效必须同时验证
+> 源码一致 + `node_modules/wx-server-sdk` 存在**，这正是 `--verify` 做的事。
+
+> 前置条件：命令行调用需要 DevTools **服务端口已开启**
+> （工具 → 设置 → 安全设置 → 服务端口）。未开启时报
+> `IDE service port disabled`。
+
 > 🔴 **不要部署 `common`**：`cloudfunctions/common/` 是**共享代码源**
 > （只有 `index.js`，没有 `package.json`），不是云函数。
 > 它的内容由 `tools/gen-cloudfunctions.js` 复制成每个函数目录内的 `common.js`，

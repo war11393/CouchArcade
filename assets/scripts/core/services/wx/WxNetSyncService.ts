@@ -445,6 +445,11 @@ export class WxNetSyncService implements INetSyncService {
         name: string,
         data: Record<string, unknown>,
     ): Promise<void> {
+        // 上行是否成功 —— 看门狗要据此分岔（见 _armWatchAckWatchdog）。
+        // 缺了它，看门狗会把「上行就失败了」也报成「下行通道断」，
+        // 上一次真机排查就被这条误导过：真正原因是云函数依赖缺失
+        // （Cannot find module 'wx-server-sdk'），日志却让去查集合权限。
+        let upstreamOk = false;
         try {
             const res = await wx.cloud.callFunction({ name, data });
             const envelope = (res as { result?: { success?: boolean; code?: number; message?: string } })
@@ -487,6 +492,7 @@ export class WxNetSyncService implements INetSyncService {
             }
 
             // 成功：打印一行「已受理」，与下面的 watch 回执配对排查。
+            upstreamOk = true;
             console.log(
                 `[WxNetSync] ↑ ${name} 已受理 code=${envelope.code}` +
                     `（等待 watch 下行回执；若无回执见 WATCH_ACK_TIMEOUT）`,
@@ -504,7 +510,7 @@ export class WxNetSyncService implements INetSyncService {
                 }),
             );
         } finally {
-            this._armWatchAckWatchdog(name);
+            this._armWatchAckWatchdog(name, upstreamOk);
         }
     }
 
@@ -518,15 +524,31 @@ export class WxNetSyncService implements INetSyncService {
      *   集合权限不是「所有用户可读」时 watch **静默失败**（无错、无回调），
      *   而此时上行日志一切正常、界面只卡在「对手思考中」——
      *   排查时最耗时的就是这种「看起来哪里都对」。
-     *   有了这条日志，真机上一眼就能分辨是「云函数没生效」还是「watch 收不到」。
+     *
+     * @param upstreamOk 上行是否成功。
+     *   ⚠️ 必须分岔报错，否则会误导排查方向（真实教训，2026-09-24）：
+     *     当时 `gomoku_move` 因为**云端缺依赖**（`-504002 Cannot find module
+     *     'wx-server-sdk'`）直接抛错，上行根本没成功；可看门狗却统一报
+     *     「上行通道正常、下行通道断 → 去查集合权限」，把方向带到了完全错误的
+     *     地方。现在：上行失败 → 直接说「上行失败，看上面那条错误」；
+     *     只有上行确实成功、却仍无下行，才提示去查集合权限。
      */
-    private _armWatchAckWatchdog(name: string): void {
+    private _armWatchAckWatchdog(name: string, upstreamOk: boolean): void {
         this._watchAckSeq++;
         const seq = this._watchAckSeq;
         this._lastWatchAckSeq = seq;
         setTimeout(() => {
             // 期间已经有下行 → 正常，什么都不做
             if (this._lastWatchAckSeq !== seq) {
+                return;
+            }
+            if (!upstreamOk) {
+                console.error(
+                    `[WxNetSync] WATCH_ACK_TIMEOUT：${name} **上行本身就失败了**` +
+                        `（见上方 callFunction 错误），因此不会有任何 watch 下行。` +
+                        `请先修上行 —— 最常见的是云函数未部署或**云端未安装依赖**：` +
+                        `用 cli cloud functions deploy --remote-npm-install 重新部署。`,
+                );
                 return;
             }
             console.error(
