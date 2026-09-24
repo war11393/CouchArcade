@@ -80,6 +80,11 @@ export interface ShareRoomInfo {
     roomId: string;
     gameId: GameId;
     gameName: string;
+    /**
+     * 自定义分享标题（可选）。缺省用通用文案「快来和我玩…」。
+     * 邀请按钮会传入含真实入座人数的文案，比写死文案更接近所见即所得。
+     */
+    title?: string;
 }
 
 // ==========================================================================
@@ -303,6 +308,13 @@ export interface INetSyncService {
 export interface IShareService {
     /** 分享房间邀请（带 roomId query，好友点击可直进房间）。 */
     shareRoom(roomInfo: ShareRoomInfo): void;
+    /**
+     * 清除「右上角菜单转发」的自定义内容并隐藏转发入口（离开房间时调用）。
+     *
+     * 必要性（2026-09-24 邀请机制）：不清的话，玩家退房后从右上角
+     * 「转发」仍会分享出**已失效的旧房间卡片**，好友点开必然报错。
+     */
+    clearPassiveShare(): void;
     /** 订阅分享结果回调，返回取消订阅函数。 */
     onShareResult(cb: (result: ShareResult) => void): () => void;
     /** 设置「右上角菜单转发」的默认分享内容。 */

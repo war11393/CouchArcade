@@ -67,6 +67,11 @@ export class RoomScene extends Component {
     private _entered = false;
     /** 开局请求进行中（防止 watch 重复推送触发并发 startRoom）。 */
     private _starting = false;
+    /**
+     * 最近一次房间快照 —— 邀请分享的标题要报**真实入座人数**，
+     * 不能拿 _initRoom 时刻的旧快照（那会永远显示「就差你了」即使已 2 人）。
+     */
+    private _lastState: RoomState | null = null;
     /** 「准备」按钮当前是否处于隐藏态（用于避免每次状态推送都重排按钮）。 */
     private _readyHidden = false;
 
@@ -116,6 +121,7 @@ export class RoomScene extends Component {
 
         // 按钮
         bindClick(this.node, 'Canvas/BtnBar/BtnReady', () => void this._onToggleReady());
+        bindClick(this.node, 'Canvas/BtnBar/BtnInvite', () => this._onInvite());
         bindClick(this.node, 'Canvas/BtnBar/BtnLeave', () => void this._onLeave());
 
         // 初始文案
@@ -188,6 +194,7 @@ export class RoomScene extends Component {
 
     /** 房间状态变化 → 刷新 UI。 */
     private _onRoomState(state: RoomState): void {
+        this._lastState = state;
         const user = services.auth.getCachedUser();
         const myId = user ? user.openid : '';
 
@@ -212,6 +219,12 @@ export class RoomScene extends Component {
                 break;
             case RoomStatus.PLAYING:
                 this._setStatus('对局进行中');
+                // ⚠️ 非房主进对局的唯一入口（2026-09-24 邀请机制补齐的缺口）：
+                //   房主开局走 _onStart → startRoom → _enterGame；而被邀请的
+                //   第二人只能靠 room watch 推来的 PLAYING 快照 —— 此前这里
+                //   只改文案，B 方会永远卡在房间页「对局进行中」。
+                //   _entered 是幂等闸：房主自己收到这条推送时不会重复切入。
+                this._enterGame(state);
                 break;
             case RoomStatus.FINISHED:
                 this._setStatus('对局已结束');
@@ -306,6 +319,16 @@ export class RoomScene extends Component {
         // 三处必须同口径，否则会出现「按钮写准备、服务端却已放行」的困惑。
         this._setReadyButtonVisible(!state.isPractice);
 
+        // 「邀请」按钮显隐：房主 + 还没开局 + 非练习房。
+        //   - 练习房是单人 + AI，邀请出去没有意义；
+        //   - 已开局/已结束的房，好友点开只会撞 4003（已开局），不给坏入口；
+        //   - 非房主不显示：第二人再转发会造成「双房主」误解。
+        const canInvite =
+            !state.isPractice &&
+            this._isOwner &&
+            (state.status === RoomStatus.WAITING || state.status === RoomStatus.READY);
+        this._setInviteButtonVisible(canInvite, state);
+
         // 「能不能开局」= 房主 + 非对局中 + 练习房全员入座 / 联机房全员就绪。
         //
         // ⚠️ 旧实现在练习房里只要 isPractice=true 就恒报 canStart=true，
@@ -343,16 +366,77 @@ export class RoomScene extends Component {
         this._readyHidden = !visible;
 
         const ready = findNode(this.node, 'Canvas/BtnBar/BtnReady');
-        const leave = findNode(this.node, 'Canvas/BtnBar/BtnLeave');
         if (ready) {
             ready.active = visible;
         }
-        if (leave) {
-            // 设计态：准备在 x=-163、离开在 x=+163（并列居中）。
-            // 只剩离开时移到 x=0 居中。
-            leave.setPosition(new Vec3(visible ? 163 : 0, leave.position.y, leave.position.z));
-        }
+        // ⚠️ leave/invite 的坐标不再手改 —— 整排按钮位置由 _layoutBtnBar
+        //    按「可见集合」统一布局（谁隐藏谁腾位，不留空洞）。
+        this._layoutBtnBar();
         console.log(`[RoomScene] 准备按钮${visible ? '显示' : '隐藏（AI 练习无准备环节）'}`);
+    }
+
+    /** 邀请按钮显隐 + 文案（含真实入座人数）。 */
+    private _setInviteButtonVisible(visible: boolean, state: RoomState): void {
+        const invite = findNode(this.node, 'Canvas/BtnBar/BtnInvite');
+        if (!invite) {
+            console.warn('[RoomScene] 缺少 BtnInvite 节点（请用 tools/gen-scenes.js 重新生成 Room 场景）');
+            return;
+        }
+        if (visible) {
+            const joined = state.seats.filter((s) => s.playerId !== '').length;
+            // 2 人理论上开得了局（走到这就快切场景了），文案不误导
+            setLabelText(
+                this.node,
+                'Canvas/BtnBar/BtnInvite/BtnInviteLabel',
+                joined >= 2 ? '邀请中…' : '邀请好友',
+            );
+        }
+        if (invite.active !== visible) {
+            invite.active = visible;
+            this._layoutBtnBar(); // 可见性变了 → 整排重排
+        }
+    }
+
+    /**
+     * BtnBar 三按钮布局：只给可见的按钮排位，整排居中。
+     *
+     * 三席 [-232, 0, 232]；两席 [-163, 163]（与原双按钮设计态一致）；
+     * 一席 [0]。按钮宽度统一 204（场景生成器里的值）。
+     */
+    private _layoutBtnBar(): void {
+        const xs: Record<number, number[]> = {
+            3: [-232, 0, 232],
+            2: [-163, 163],
+            1: [0],
+        };
+        const nodes = ['BtnReady', 'BtnInvite', 'BtnLeave']
+            .map((p) => findNode(this.node, `Canvas/BtnBar/${p}`))
+            .filter((n): n is Node => !!n && n.active);
+        const list = xs[nodes.length] || [];
+        nodes.forEach((n, i) => n.setPosition(new Vec3(list[i], n.position.y, n.position.z)));
+    }
+
+    /** 邀请好友：拉起微信分享面板，卡片带 roomId+gameId，好友点开直达房间。 */
+    private _onInvite(): void {
+        const state = this._lastState;
+        const params = this._params;
+        if (!state || !params) {
+            uiManager.toast('房间信息还没就绪，稍等一下', undefined);
+            return;
+        }
+        const meta = requireGameMeta(params.gameId);
+        const joined = state.seats.filter((s) => s.playerId !== '').length;
+        const title =
+            joined >= 2
+                ? `「${meta.name}」房间号 ${state.roomId}`
+                : `快来和我玩「${meta.name}」，就差你了！房间号 ${state.roomId}`;
+        services.share.shareRoom({
+            roomId: state.roomId,
+            gameId: params.gameId,
+            gameName: meta.name,
+            title,
+        });
+        console.log(`[RoomScene] 邀请分享已拉起 roomId=${state.roomId} joined=${joined}`);
     }
 
     /** 房间级消息处理。 */
@@ -452,6 +536,13 @@ export class RoomScene extends Component {
 
     /** 离开房间。 */
     private async _onLeave(): Promise<void> {
+        // 退房即清「右上角转发」的旧房间卡片 —— 不清的话，退房后从菜单
+        // 转出去的仍是**已失效的房间**，好友点开撞 4002/4003（坏链接）。
+        try {
+            services.share.clearPassiveShare();
+        } catch (err) {
+            console.warn('[RoomScene] 清除分享内容失败（不阻塞退房）:', err);
+        }
         try {
             await services.room.leaveRoom();
         } catch (err) {

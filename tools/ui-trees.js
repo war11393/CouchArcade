@@ -540,15 +540,22 @@ function roomTree() {
     });
 
     // 底部操作区：贴底容器（Widget）—— 原先写死 y=-480，长屏上会浮起
-    // 容器高 200，两个按钮在容器内居中（子节点坐标相对容器中心）
+    // 容器高 200，按钮在容器内居中（子节点坐标相对容器中心）
+    //
+    // 2026-09-24 邀请机制：三按钮「准备 / 邀请 / 离开」，宽 204、
+    // 三席 ±232/0（间距由 RoomScene._layoutBtnBar 按可见集合动态排位）。
+    // 默认 active：邀请显示（进房即房主居多）；非房主/练习房由代码隐藏。
     const btnBar = bottomBarNode('BtnBar', 200, C.bg, {
         borderWidth: 0,
         children: [
-            buttonNode('BtnReady', '准  备', 300, 92, {
-                pos: [-163, 0], style: 'primary', fontSize: FONT.h2, radius: RADIUS.lg,
+            buttonNode('BtnReady', '准  备', 204, 92, {
+                pos: [-232, 0], style: 'primary', fontSize: FONT.h2, radius: RADIUS.lg,
             }),
-            buttonNode('BtnLeave', '离  开', 300, 92, {
-                pos: [163, 0], style: 'secondary', fontSize: FONT.h2, radius: RADIUS.lg,
+            buttonNode('BtnInvite', '邀请好友', 204, 92, {
+                pos: [0, 0], style: 'soft', fontSize: FONT.body, radius: RADIUS.lg,
+            }),
+            buttonNode('BtnLeave', '离  开', 204, 92, {
+                pos: [232, 0], style: 'secondary', fontSize: FONT.h2, radius: RADIUS.lg,
             }),
         ],
     });

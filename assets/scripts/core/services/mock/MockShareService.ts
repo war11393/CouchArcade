@@ -37,6 +37,11 @@ export class MockShareService implements IShareService {
         console.log(`[MockShare] 已设置右上角转发内容：房间 ${roomInfo.roomId}`);
     }
 
+    public clearPassiveShare(): void {
+        this._passive = null;
+        console.log('[MockShare] 已清除转发内容');
+    }
+
     /** 调试用：当前被动分享内容。 */
     public getPassiveShare(): ShareRoomInfo | null {
         return this._passive;

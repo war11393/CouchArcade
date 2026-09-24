@@ -25,6 +25,8 @@
  *  14. test-ai-fullgame（云函数 AI 整局对拉：不会中途卡在 AI 回合并停不下来）
  *  15. test-settle-idempotent（结算幂等：投降双路径不会重复写战绩 / 累加胜负）
  *  16. test-planehunt-turn（寻机头回合规则：云函数与客户端一致「一律换手」）
+ *  17. test-planehunt-payload（寻机头翻格字段契约：两端字段名不得漂移）
+ *  18. test-room-invite（邀请好友直进房间：分享→解析→入座→开局全链路）
  */
 
 const { execFileSync } = require('child_process');
@@ -59,6 +61,7 @@ const steps = [
     { name: 'test-cloud-ai-seat（AI 练习开局）', run: () => node('test-cloud-ai-seat.js') },
     { name: 'test-planehunt-turn（寻机头回合规则：云函数与客户端一致「一律换手」）', run: () => node('test-planehunt-turn.js') },
     { name: 'test-planehunt-payload（寻机头翻格字段契约：两端字段名不得漂移）', run: () => node('test-planehunt-payload.js') },
+    { name: 'test-room-invite（邀请好友直进房间全链路）', run: () => node('test-room-invite.js') },
     { name: 'test-server-ai（服务端 AI 与客户端等价）', run: () => node('test-server-ai.js') },
     { name: 'test-gomoku-ai-e2e（云函数 AI 回手端到端）', run: () => node('test-gomoku-ai-e2e.js') },
     { name: 'test-result-dialog（结算弹窗无蒙版）', run: () => node('test-result-dialog.js') },

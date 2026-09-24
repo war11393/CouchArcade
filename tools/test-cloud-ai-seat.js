@@ -228,8 +228,19 @@ console.log('\n场景 8：AI 练习无准备环节（需求：点 AI 练习直�
 
     check('练习房隐藏「准备」按钮', /_setReadyButtonVisible\(!state\.isPractice\)/.test(roomSrc),
         '准备按钮未按 isPractice 隐藏');
-    check('隐藏时把「离开」按钮居中', /visible \? 163 : 0/.test(roomSrc),
-        '隐藏准备后离开未居中，会留下空洞');
+    // ⚠️ 契约升级（2026-09-24 邀请机制）：原先断言写死 `visible ? 163 : 0` ——
+    //    那是「两按钮时代」把 leave 手动居中的写法。现在按钮变成三个
+    //    （准备/邀请/离开），位置统一交给 _layoutBtnBar 按**可见集合**排布：
+    //    只剩 1 个按钮时 x=0（等价于原行为），两个时 ±163，三个时 ±232/0。
+    //    断言随之改为「存在按可见集合排位的布局函数」+「单按钮居中」，
+    //    而不是钉住某一行三元表达式（否则每次按钮增减都误报）。
+    check('按钮位置由 _layoutBtnBar 按可见集合统一排位',
+        /private _layoutBtnBar\(\): void/.test(roomSrc) && /1: \[0\]/.test(roomSrc),
+        '未按可见集合排位（隐藏一个会留下空洞）');
+    check('_setReadyButtonVisible 走统一排位（不再手写坐标）',
+        /this\._layoutBtnBar\(\)/.test(
+            (roomSrc.match(/_setReadyButtonVisible\(visible: boolean\): void \{[\s\S]*?\n    \}/) || [''])[0]),
+        '准备按钮显隐后没有触发重排');
     check('隐藏/显示状态做了去重（避免每次推送重排）', /this\._readyHidden === !visible/.test(roomSrc));
     check('练习房文案不再要求点准备', !/点击「开始游戏」开局/.test(roomSrc),
         '仍残留「点击开始游戏开局」的旧文案');

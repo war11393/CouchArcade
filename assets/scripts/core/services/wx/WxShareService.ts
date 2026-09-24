@@ -22,7 +22,8 @@ export class WxShareService implements IShareService {
 
     public shareRoom(roomInfo: ShareRoomInfo): void {
         const option: WxShareAppMessageOption = {
-            title: `快来和我玩「${roomInfo.gameName}」！房间号 ${roomInfo.roomId}`,
+            // 标题优先用调用方的动态文案（含真实入座人数）；缺省回落到通用邀请语
+            title: roomInfo.title || `快来和我玩「${roomInfo.gameName}」！房间号 ${roomInfo.roomId}`,
             // imageUrl 留空时微信自动截取当前画面。
             // 如需自定义，须为 5:4 比例且 ≤300KB（过大或比例错误会导致分享失败）。
             query: this._buildQuery(roomInfo),
@@ -147,7 +148,9 @@ export class WxShareService implements IShareService {
             };
         }
         return {
-            title: `快来和我玩「${info.gameName}」！房间号 ${info.roomId}`,
+            // 与主动邀请同源：也吃自定义 title（setPassiveShare 每次状态推送
+            // 都会用最新 roomInfo 重设，因此标题能跟着入座人数变）
+            title: info.title || `快来和我玩「${info.gameName}」！房间号 ${info.roomId}`,
             query: this._buildQuery(info),
         };
     }
