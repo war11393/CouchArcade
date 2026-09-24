@@ -19,6 +19,8 @@ import { uiManager } from '../core/UIManager';
 import {
     THEME,
     bindClick,
+    displayName,
+    displayNumber,
     findNode,
     forceUILayer,
     labelAt,
@@ -161,10 +163,14 @@ export class GameScene extends Component {
      *     └─ Camera               [cc.Camera]
      */
     private _bindUI(mySeat: SeatInfo, oppSeat: SeatInfo): void {
+        // ⚠️ 昵称必须兜底（2026-09-24 真机反馈「出现很多 undefined」）：
+        //    座位信息来自云函数/实时推送，任何一端字段缺失都会把 undefined
+        //    直接拼进 Label 变成 "undefined 🤖"，非常显眼。
+        //    这里统一走 displayName() 清洗，宁可显示「对手」也不显示 undefined。
         const oppTag = oppSeat.isAI ? ' 🤖' : '';
-        setLabelText(this.node, 'Canvas/Hud/OppName', `${oppSeat.nickname}${oppTag}`);
+        setLabelText(this.node, 'Canvas/Hud/OppName', `${displayName(oppSeat.nickname, '对手')}${oppTag}`);
         setLabelText(this.node, 'Canvas/Hud/OppScore', '0');
-        setLabelText(this.node, 'Canvas/Hud/MyName', `${mySeat.nickname} (我)`);
+        setLabelText(this.node, 'Canvas/Hud/MyName', `${displayName(mySeat.nickname, '我')} (我)`);
         setLabelText(this.node, 'Canvas/Hud/MyScore', '0');
         setLabelText(this.node, 'Canvas/Hud/TurnLabel', '对局开始');
         setLabelText(this.node, 'Canvas/Hud/TimerLabel', `${AppConfig.TURN_TIME_LIMIT_SEC}s`);
@@ -407,7 +413,7 @@ export class GameScene extends Component {
         if (!this._timerLabel) {
             return;
         }
-        this._timerLabel.string = `${this._remainSec}s`;
+        this._timerLabel.string = `${displayNumber(this._remainSec)}s`;
         this._timerLabel.color = this._remainSec <= AppConfig.TURN_TIME_WARN_SEC ? THEME.danger : THEME.text;
     }
 
@@ -486,25 +492,32 @@ export class GameScene extends Component {
         }
 
         // 得分 + 机头进度（寻机头）
+        // ⚠️ 全部经 displayNumber 兜底：这些值来自 Board 的 getter 与云端推送，
+        //    一旦某处传进 undefined，`${undefined}` 会渲染成字面量 "undefined"
+        //    （2026-09-24 真机反馈的"很多 undefined"）。宁可显示 0。
         if (this._ctx.room.gameId === GameId.PLANE_HUNT) {
             const board = this._boardNode?.getChildByName('PlaneHuntBoard')?.getComponent(PlaneHuntBoard);
             if (board) {
                 if (this._myScoreLabel) {
-                    this._myScoreLabel.string = String(board.getMyScore());
+                    this._myScoreLabel.string = displayNumber(board.getMyScore());
                 }
                 if (this._oppScoreLabel) {
-                    this._oppScoreLabel.string = String(board.getOppScore());
+                    this._oppScoreLabel.string = displayNumber(board.getOppScore());
                 }
                 // 机头进度：已找到 n / 总数（寻机头特有的关键信息 ——
                 // 对局何时结束只取决于这个数字，玩家必须随时看得到）
                 if (this._headsLabel) {
                     const found = board.getHeadsFound();
                     const total = board.getHeadTotal();
-                    const text = `已找到机头 ${found} / ${total}`;
+                    const foundText = displayNumber(found);
+                    const totalText = displayNumber(total, '?');
+                    const text = `已找到机头 ${foundText} / ${totalText}`;
                     if (this._headsLabel.string !== text) {
                         this._headsLabel.string = text;
                     }
-                    this._headsLabel.color = found >= total ? THEME.success : THEME.textDim;
+                    const safeFound = typeof found === 'number' ? found : 0;
+                    const safeTotal = typeof total === 'number' && total > 0 ? total : Infinity;
+                    this._headsLabel.color = safeFound >= safeTotal ? THEME.success : THEME.textDim;
                 }
             }
         }

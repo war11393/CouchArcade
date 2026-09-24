@@ -395,3 +395,34 @@ export function setLabelText(from: Node, path: string, text: string): boolean {
     l.string = text;
     return true;
 }
+
+/**
+ * 取一个可以安全拼进 UI 的显示名。
+ *
+ * 2026-09-24 真机反馈「界面出现很多 undefined」的根因防护：
+ * 昵称/标签这类字段来自云函数与实时推送，**任何一端缺字段**，模板字符串
+ * 都会把它变成字面量 "undefined"（`${x}` 比 `String(x)` 更隐蔽，因为
+ * 前者在 x 为 undefined 时不抛错）。这个函数把「非字符串 / 空白 / 字面
+ * 'undefined' / 'null'」统一换成兜底文案。
+ *
+ * ⚠️ 只用于**展示**；不要用它做逻辑判断（那会掩盖真实的字段缺失）。
+ *    真正缺失的字段应该在数据层修好，这里只是最后一道防线。
+ */
+export function displayName(raw: unknown, fallback: string): string {
+    if (typeof raw !== 'string') {
+        return fallback;
+    }
+    const trimmed = raw.trim();
+    if (trimmed === '' || trimmed === 'undefined' || trimmed === 'null') {
+        return fallback;
+    }
+    return trimmed;
+}
+
+/**
+ * 同 displayName，但用于数字展示（防止 `${undefined}` 渲染成 "undefined"）。
+ * 非有限数字一律回落到 fallback。
+ */
+export function displayNumber(raw: unknown, fallback = '0'): string {
+    return typeof raw === 'number' && Number.isFinite(raw) ? String(raw) : fallback;
+}

@@ -414,6 +414,23 @@ export class PlaneHuntGame implements IGame {
             return;
         }
 
+        // ⚠️ 字段容错（2026-09-24 真机事故的防御层）：
+        //   云函数历史版本的 flips[] 只写 playerId，客户端读 byPlayerId 得到
+        //   undefined → 归属判定失败、HUD 显示 undefined、回合判定恒 false
+        //   → 「我的回合无法落子」。
+        //   服务端已补齐字段，但**断线重连会重放旧数据**，所以这里仍然兜一层：
+        //   缺 byPlayerId 时回落到 playerId；缺 nextPlayerId 时保持当前回合不变
+        //   （而不是把 undefined 灌进去让回合判定恒 false）。
+        const raw = p as unknown as Record<string, unknown>;
+        const byPlayerId = (p.byPlayerId ?? raw.playerId ?? '') as string;
+        if (!byPlayerId || !p.nextPlayerId) {
+            console.warn(
+                '[PlaneHuntGame] PH_FLIP_RESULT 字段缺失，已兜底：' +
+                    `byPlayerId=${String(p.byPlayerId)}→${byPlayerId || '(空)'} ` +
+                    `nextPlayerId=${String(p.nextPlayerId)}→${p.nextPlayerId || '(保持当前回合)'}`,
+            );
+        }
+
         // 我预反馈的那一格：权威结果到了 → 撤掉「判定中」标记。
         // 必须在幂等短路**之前**清 —— 否则重连重放同一格时标记会永远留着。
         const isMyPending = this._pending
@@ -455,10 +472,25 @@ export class PlaneHuntGame implements IGame {
             return;
         }
 
+        // ── 字段容错（真机事故的防御层，见 _applyFlipResult 的说明）──
+        // 缺 byPlayerId → 回落 playerId（旧版云函数只写这个）；
+        // 缺 nextPlayerId → **保持当前回合不变**，而不是灌 undefined
+        //   （灌进去会让 isMyTurn() 恒 false → 玩家「无法落子」）；
+        // 缺 headsFound/score → 用棋盘现有值，不显示 undefined。
+        const raw = p as unknown as Record<string, unknown>;
+        const byPlayerId = (p.byPlayerId || (raw.playerId as string) || '') as string;
+        const nextPlayerId = (p.nextPlayerId || this._serverTurnId || '') as string;
+        const headsFound = typeof p.headsFound === 'number'
+            ? p.headsFound
+            : (this._board ? this._board.getHeadsFound() : 0);
+        const score = typeof p.score === 'number'
+            ? p.score
+            : (this._board ? (byPlayerId === this._ctx.myPlayerId ? this._board.getMyScore() : this._board.getOppScore()) : 0);
+
         // 记录权威下发的回合 —— 客户端不自行推演棋局，
         // 回合判定唯一依据就是这里（见 _serverTurnId 的说明）。
         const prevTurn = this._serverTurnId;
-        this._serverTurnId = p.nextPlayerId;
+        this._serverTurnId = nextPlayerId;
         // 注意：不要往本地 rules 里塞 nextPlayerId —— 改本地规则等于客户端自行
         // 推演棋局，与「布局/判定全在权威方」的防篡改设计相悖。
         // 「哪些格已翻开」由 PlaneHuntBoard 自维护（见 revealCell / isRevealedInBoard）。
@@ -467,9 +499,9 @@ export class PlaneHuntGame implements IGame {
             this._board.showThinking(false);
             // 归属按 byPlayerId 判定（信封里的 playerId 是权威代发的发送者，
             // 对 AI 出手来说那是 AI 自己，不能用它判断「是不是我翻的」）
-            const byMe = p.byPlayerId === this._ctx.myPlayerId;
-            this._board.revealCell(p.row, p.col, p.cell, byMe, p.scored, p.score);
-            this._board.setTurn(p.nextPlayerId === this._ctx.myPlayerId, p.headsFound, this._headTotal());
+            const byMe = byPlayerId === this._ctx.myPlayerId;
+            this._board.revealCell(p.row, p.col, p.cell, byMe, p.scored, score);
+            this._board.setTurn(nextPlayerId === this._ctx.myPlayerId, headsFound, this._headTotal());
         }
 
         // 翻中机头：给一次视觉反馈（**不再**奖励连翻，见 PlaneHuntRules 说明）。
@@ -481,7 +513,7 @@ export class PlaneHuntGame implements IGame {
         // ⚠️ 必须用权威回合 + 未结束来重算输入开关。
         //    只在这里设置输入状态，且条件含 nextPlayerId —— 曾经漏了这步，
         //    导致回合切回我方时棋盘仍是「不可点」的。
-        const myTurnNow = !this._finished && p.nextPlayerId === this._ctx.myPlayerId;
+        const myTurnNow = !this._finished && nextPlayerId === this._ctx.myPlayerId;
         if (this._board) {
             this._board.setInputEnabled(myTurnNow);
         }

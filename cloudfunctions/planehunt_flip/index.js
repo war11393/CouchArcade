@@ -63,16 +63,22 @@ exports.main = wrap('planehunt_flip', async function (ctx, event) {
     if (revealed[cellKey]) {
         const r = revealed[cellKey];
         console.log(`[planehunt_flip] ${cellKey} 已翻开，幂等返回`);
+        // ⚠️ 这里的字段名必须与正常路径**完全一致**（客户端只有一套解析逻辑）：
+        //    2026-09-24 真机事故同源 —— revealed[].byPlayerId 本来就存着归属，
+        //    但这个返回体漏了它，客户端读到 undefined → 归属判定失败。
+        //    凡是「会变成 PH_FLIP_RESULT payload」的对象，都要有 byPlayerId。
         return ok({
             row: row,
             col: col,
             cell: r.cell,
             scored: false,
             extraTurn: false,
+            byPlayerId: r.byPlayerId || ctx.openid,
             headsFound: game.headsFound,
             score: (game.scores && game.scores[ctx.openid]) || 0,
             nextPlayerId: game.currentPlayerId,
             planeIndex: r.planeIndex,
+            finished: false,
             idempotent: true,
         });
     }
@@ -121,6 +127,38 @@ exports.main = wrap('planehunt_flip', async function (ctx, event) {
         nextPlayerId = otherPlayer(room, ctx.openid);
     }
 
+    /**
+     * 人类这一手的**完整记录** —— 既写进 `game.flips`（客户端 watch 的增量源），
+     * 也作为 AI 分支的起点数组，两处共用同一份，避免字段漂移。
+     *
+     * ⚠️ 字段名必须与客户端 `PhFlipResultPayload`（protocol/Protocol.ts）一致：
+     *   byPlayerId / score / headsFound / nextPlayerId / extraTurn / finished。
+     *   2026-09-24 真机事故：原先只写 playerId，客户端读 byPlayerId 得到 undefined
+     *   → 归属判定失败、HUD 显示 undefined、回合判定恒 false
+     *   → 玩家看到「我的回合无法落子」。
+     *   改这里必须同步 Protocol.ts（两端只有这一处约定）。
+     */
+    const humanFlipRecord = {
+        row: row,
+        col: col,
+        cell: cell,
+        scored: scored,
+        /** 客户端字段名（历史原因与 playerId 并存 → 两个都写，兼容 Mock 与旧客户端） */
+        byPlayerId: ctx.openid,
+        playerId: ctx.openid,
+        /** 翻这一格的人（本轮）累计得分，供 HUD 直接显示 */
+        score: scores[ctx.openid],
+        /** 当前累计已翻出的机头数 */
+        headsFound: headsFound,
+        /** 翻完这一格后轮到谁（客户端回合判定的唯一依据） */
+        nextPlayerId: nextPlayerId,
+        /** 恒 false（翻到机头也换手；字段保留以兼容消息结构） */
+        extraTurn: extraTurn,
+        planeIndex: planeIndex,
+        /** 这一手是否终结了对局（客户端据此结束本地推演） */
+        finished: finished,
+    };
+
     // 结算胜负
     let winnerId = '';
     let draw = false;
@@ -141,17 +179,14 @@ exports.main = wrap('planehunt_flip', async function (ctx, event) {
             winnerId: winnerId,
             draw: draw,
             // ⚠️ flips 是**客户端 watch 的字段**（见 WxNetSyncService._handleGameDoc：
-            //    它按数组长度增量派发 PH_FLIP_RESULT）。
-            //    只写 revealed 而不写 flips，客户端永远收不到翻格结果。
-            //    ⚠️ 这里只放**已公开**的格子信息，绝不放 cells 权威布局。
-            flips: appendFlip(game.flips, {
-                row: row,
-                col: col,
-                cell: cell,
-                scored: scored,
-                playerId: ctx.openid,
-                planeIndex: planeIndex,
-            }),
+            //    它按数组长度增量派发 PH_FLIP_RESULT，payload 就是这里的元素）。
+            //    因此这里写入的字段名**必须与客户端 PhFlipResultPayload 对齐** ——
+            //    2026-09-24 真机踩坑：原先只写 playerId，而客户端读的是 byPlayerId，
+            //    于是 byPlayerId=undefined → 归属判定失败、HUD 显示 undefined、
+            //    回合判定恒 false → 「我的回合无法落子」。
+            //    字段清单统一由 humanFlipRecord 产出（同一手既要写库、又要喂给
+            //    AI 分支，两处共用一份，避免再次漂移）。
+            flips: appendFlip(game.flips, humanFlipRecord),
             updatedAt: Date.now(),
         },
     });
@@ -161,22 +196,11 @@ exports.main = wrap('planehunt_flip', async function (ctx, event) {
     // 与 gomoku_move 同构：人类这手成功写库后，若对局未结束且轮到 AI 座位，
     // 立刻替 AI 翻一格并写库。串行执行 ⇒ 天然幂等，不会「AI 连翻两格」。
     //
-    // ⚠️ 寻机头的「翻中机头额外一次」规则对 AI 同样成立：AI 翻中机头时
-    //    回合不会切回人类，此时要**继续让 AI 翻**（循环），否则会出现
-    //    「AI 翻中机头后卡住、人类也点不了」的死局。
-    //
-    // ⚠️ flips 必须传「含人类这一手之后」的数组 —— 不能读 game.flips
-    //    （那是本函数开头的旧快照）。用旧快照会让 AI 的写入**覆盖掉人类
-    //    刚才那格**，客户端增量派发时就少显示一格（仿真抓到过）。
+    // ⚠️ flips 必须从**含人类这一手**的数组继续（不能读 game.flips —— 那是
+    //    本函数开头的旧快照，AI 的写入会覆盖掉人类刚才那格，客户端增量派发
+    //    就少显示一格，仿真抓到过）。
     let aiFlips = [];
-    const flipsAfterHuman = appendFlip(game.flips, {
-        row: row,
-        col: col,
-        cell: cell,
-        scored: scored,
-        playerId: ctx.openid,
-        planeIndex: planeIndex,
-    });
+    const flipsAfterHuman = appendFlip(game.flips, humanFlipRecord);
     if (!finished) {
         aiFlips = await runAiFlips(ctx, {
             colName: colName,
@@ -338,6 +362,12 @@ async function runAiFlips(ctx, st) {
     // AI 的每一格都要追加进 flips（客户端按数组长度增量派发），
     // 否则人类界面收不到 AI 翻格、会卡在「对手思考中」。
     // 起点用调用方传入的 flips（已含人类那一手），不能读 st.game.flips 旧快照。
+    //
+    // ⚠️ 字段名与人类那一手**完全一致**（见 humanFlipRecord 的说明）——
+    //    客户端对每一格都按同一套 PhFlipResultPayload 解析，少一个字段
+    //    就会出现 undefined（2026-09-24 真机事故的直接成因）。
+    //    注意 byPlayerId 用 f.playerId（AI 自己），score/headsFound/nextPlayerId
+    //    取**该格落库后的权威值**（AI 每格都会推进这些状态）。
     let flips = Array.isArray(st.flips) ? st.flips.slice() : [];
     for (const f of out) {
         flips = appendFlip(flips, {
@@ -345,8 +375,14 @@ async function runAiFlips(ctx, st) {
             col: f.col,
             cell: f.cell,
             scored: f.scored,
+            byPlayerId: f.playerId,
             playerId: f.playerId,
+            score: (st.scores && st.scores[f.playerId]) || 0,
+            headsFound: f.headsFound,
+            nextPlayerId: f.nextPlayerId,
+            extraTurn: false,
             planeIndex: f.planeIndex,
+            finished: f.finished,
             byAI: true,
         });
     }
