@@ -64,13 +64,16 @@ export class GameScene extends Component {
     private _myNameLabel: Label | null = null;
     private _emotePanel: Node | null = null;
 
-    protected onLoad(): void {
+    protected async onLoad(): Promise<void> {
         ensureServices();
         // 竖版自适应：按机型重算设计分辨率 + 贴边条安全区避让（见 core/PortraitAdapter.ts）
         // 必须早于 _createGame —— 棋盘的可用宽高从重算后的视口来取。
         portraitAdapter.apply();
         portraitAdapter.applyEdgeInsets(this.node);
-        const params = uiManager.consumeGameParams();
+        // ⚠️ consumeGameParams 现在是 async（参数可以是「建房」的异步函数，见 UIManager.gotoGame）：
+        //    AI 练习从大厅点进来时，房间要在**本场景 onLoad 内**才建好 ——
+        //    这样既不必闪一下房间页，也不必让玩家在大厅干等一次云函数往返。
+        const params = await uiManager.consumeGameParams();
         if (!params) {
             console.warn('[GameScene] 缺少对局参数，返回大厅');
             uiManager.gotoLobby();

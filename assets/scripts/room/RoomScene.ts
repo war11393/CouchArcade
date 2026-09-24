@@ -420,6 +420,27 @@ export class RoomScene extends Component {
         if (this._entered) return;
         this._entered = true;
 
+        // ⚠️ 必须在这里停掉 room watch —— 这是「落子无反应 + 卡在对手思考中」的根因
+        //    （2026-09-24 真机事故）。
+        //
+        // 为什么：对局期间云函数每写一次 `rooms.updatedAt`，room watch 就会推一次快照，
+        //   而 `_onRoomState` 在 `status=playing` 时仍会跑 `_refreshButtons` ——
+        //   于是「每次落子 → room 推送 → 打日志/刷按钮 → …」形成反馈回路。
+        //   更糟的是 `gomoku_move` 一次调用会写**两帧**对局文档（人类手 + AI 回手），
+        //   每帧都更新 rooms，于是每步落子产生**两次** room 推送 ——
+        //   落在 Game 场景里就是持续的无效刷新，把 JS 线程占满，
+        //   连 watch 推来的 `gk.move.result` 都来不及处理。
+        //   症状恰好是「棋盘不动、遮罩不消失、日志停在进对局那一行」。
+        //
+        // 进入对局后房间页面不再可见，本就不再需要 room 推送；
+        // 之后若要显示对手在线状态，应当用**单独的一条通道 + 真的处理它**，
+        // 而不是让一个已经离开的场景继续刷新自己的 UI。
+        if (this._unwatch) {
+            this._unwatch();
+            this._unwatch = null;
+            console.log('[RoomScene] 已停止 room watch（进入对局，房间推送不再需要）');
+        }
+
         const params: GameSceneParams = {
             gameId: state.gameId,
             mode: this._params!.mode,

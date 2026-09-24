@@ -21,6 +21,15 @@ import { GameId } from '../../../config/GameList';
 import { Cmd, makeEnvelope } from '../../protocol/Protocol';
 import { INetSyncService, NetMessage, NetMessageHandler, NetStatus } from '../IServices';
 
+/**
+ * 上行被服务端受理后，等待 watch 下行的超时（毫秒）。
+ *
+ * 取值理由：正常路径下 watch 推送在 100~500ms 内到达；4s 足够覆盖慢网与
+ * 服务端首次冷启动，又不至于让玩家在真机上干等太久才看到诊断信息。
+ * 超时**不改变**任何业务行为（只打日志）—— 免得把「网络慢」误伤成「落子失败」。
+ */
+const WATCH_ACK_TIMEOUT_MS = 4000;
+
 /** 对局文档（games_gomoku / games_planehunt）在客户端侧的可见字段。 */
 interface GameDoc {
     roomId: string;
@@ -32,7 +41,23 @@ interface GameDoc {
     flips?: unknown[];
     finished?: boolean;
     currentPlayerId?: string;
-    lastMove?: { row: number; col: number; stone: number; playerId: string };
+    lastMove?: {
+        row: number;
+        col: number;
+        stone: number;
+        playerId: string;
+        /**
+         * 这一手之后轮到谁。
+         *
+         * ⚠️ 必须由云函数写进 lastMove —— 文档上的 `currentPlayerId` 虽然在
+         *    startGame / gomoku_move 里都写过，但 **startGame 的返回没有落库**，
+         *    历史实现里它可能是缺失的；没有它客户端算不出回合，
+         *    `isMyTurn()` 恒 false，表现为「点棋盘没有任何反应」。
+         */
+        nextPlayerId?: string;
+        /** 这一手是否终结了整局（客户端据此结束本地推演）。 */
+        finished?: boolean;
+    };
     lastFlip?: Record<string, unknown>;
     winnerId?: string;
     [key: string]: unknown;
@@ -54,6 +79,17 @@ export class WxNetSyncService implements INetSyncService {
     private _lastFlipCount = 0;
     /** 对局是否已派发过结束消息（防重复结算）。 */
     private _gameOverDispatched = false;
+
+    /**
+     * watch 回执看门狗用的序号。
+     *
+     * 语义：`_lastWatchAckSeq` 在**收到任何 watch 下行**时被推进到当前值。
+     * 每次上行走完就记下当时的序号，超时后比对 —— 序号没变说明这一段时间
+     * 内一条下行都没到（上行通、下行断），这个判断是**可证伪**的：
+     * 只要有任何一条 watch 推送到达，看门狗就会静默。
+     */
+    private _watchAckSeq = 0;
+    private _lastWatchAckSeq = 0;
 
     // ==================== 对外接口实现 ====================
 
@@ -333,11 +369,32 @@ export class WxNetSyncService implements INetSyncService {
      * 只派发新增部分 —— 重连后 watch 会重放全量快照，不去重会导致棋步重复应用。
      */
     private _handleGameDoc(doc: GameDoc): void {
+        // 任何一条 watch 下行到达 → 推进序号，让「上行后等不到下行」的看门狗静默。
+        // 放在最前面：即使这一帧不含增量（moveCount 没变），也证明确实「收到了下行」。
+        this._watchAckSeq++;
+        this._lastWatchAckSeq = this._watchAckSeq;
+
         // ---- 五子棋 ----
         if (this._gameId === GameId.GOMOKU) {
             const moveCount = typeof doc.moveCount === 'number' ? doc.moveCount : 0;
             if (moveCount > this._lastMoveCount && doc.lastMove) {
                 const lm = doc.lastMove;
+                // ⚠️ nextPlayerId 的取值顺序是有讲究的（2026-09-24 真机事故）：
+                //    以前只写 `doc.currentPlayerId ?? ''`，而这个字段在**历史棋局文档**
+                //    里可能不存在（startGame 当年不落库 currentPlayerId），于是派发出去
+                //    的 nextPlayerId 恒为空串 → 客户端 `isMyTurn()` 恒 false →
+                //    「点棋盘没有任何反应」。
+                //    现在优先取 **lastMove.nextPlayerId**（云函数逐手写入，一定存在），
+                //    再回落到文档的 currentPlayerId；两者都没有时给出**明确的告警**
+                //    而不是静默地派发空串 —— 后者会让问题在真机上完全不可见。
+                const nextPlayerId = lm.nextPlayerId ?? doc.currentPlayerId ?? '';
+                if (!nextPlayerId) {
+                    console.warn(
+                        '[WxNetSync] lastMove.nextPlayerId 与 doc.currentPlayerId 都为空 —— ' +
+                            '客户端将无法判断回合。请确认 gomoku_move 云函数已更新到' +
+                            '「lastMove 带 nextPlayerId」的版本并重新部署。',
+                    );
+                }
                 this._dispatch(
                     makeEnvelope(Cmd.GK_MOVE_RESULT, this._roomId, lm.playerId, {
                         row: lm.row,
@@ -347,7 +404,7 @@ export class WxNetSyncService implements INetSyncService {
                         win: !!doc.winnerId,
                         winLine: [],
                         draw: false,
-                        nextPlayerId: doc.currentPlayerId ?? '',
+                        nextPlayerId,
                     }),
                 );
                 this._lastMoveCount = moveCount;
@@ -409,8 +466,31 @@ export class WxNetSyncService implements INetSyncService {
             }
 
             if (!envelope) {
-                console.warn(`[WxNetSync] ${name} 返回体为空`);
+                // ⚠️ 这一条曾经是「静默吞掉」的：wx 在云函数**未部署**时不会 reject，
+                //    而是把 { errCode, errMsg } 塞进 result 并 resolve。以前只判
+                //    success===false，于是「未部署」被当成功，客户端继续死等 watch
+                //    （watch 又没有数据），表现为「落子无反应 + 卡在对手思考中」，
+                //    且**一条日志都没有**。这里显式暴露。
+                const raw = res as { errCode?: number; errMsg?: string };
+                console.error(
+                    `[WxNetSync] ${name} 返回体为空（疑似云函数未部署 / 未返回信封）` +
+                        ` errCode=${raw?.errCode ?? '无'} errMsg=${raw?.errMsg ?? '无'}`,
+                );
+                this._dispatch(
+                    makeEnvelope(Cmd.SYS_ERROR, this._roomId, this._playerId, {
+                        code: ERR.BAD_RESPONSE,
+                        message: `云函数 ${name} 无有效返回（检查是否已部署）`,
+                        cmd: name,
+                    }),
+                );
+                return;
             }
+
+            // 成功：打印一行「已受理」，与下面的 watch 回执配对排查。
+            console.log(
+                `[WxNetSync] ↑ ${name} 已受理 code=${envelope.code}` +
+                    `（等待 watch 下行回执；若无回执见 WATCH_ACK_TIMEOUT）`,
+            );
             // 注意：成功时不在此派发棋步 —— 棋步由 watch 下行统一派发，
             // 保证「本机操作」与「对手操作」走完全相同的路径（与 Mock 语义一致）。
         } catch (err) {
@@ -423,7 +503,40 @@ export class WxNetSyncService implements INetSyncService {
                     cmd: name,
                 }),
             );
+        } finally {
+            this._armWatchAckWatchdog(name);
         }
+    }
+
+    /**
+     * watch 回执看门狗：上行被服务端受理后，若在超时窗口内**没有任何 watch 下行**，
+     * 就明确报出「落子这步的可见性断了」。
+     *
+     * 为什么必须加（2026-09-24 真机事故）：
+     *   上行（云函数）与下行（watch）是**两条独立的通道**。
+     *   `gomoku_move` 返回 success 只证明「写库成功」，不证明 watch 能推回来。
+     *   集合权限不是「所有用户可读」时 watch **静默失败**（无错、无回调），
+     *   而此时上行日志一切正常、界面只卡在「对手思考中」——
+     *   排查时最耗时的就是这种「看起来哪里都对」。
+     *   有了这条日志，真机上一眼就能分辨是「云函数没生效」还是「watch 收不到」。
+     */
+    private _armWatchAckWatchdog(name: string): void {
+        this._watchAckSeq++;
+        const seq = this._watchAckSeq;
+        this._lastWatchAckSeq = seq;
+        setTimeout(() => {
+            // 期间已经有下行 → 正常，什么都不做
+            if (this._lastWatchAckSeq !== seq) {
+                return;
+            }
+            console.error(
+                `[WxNetSync] WATCH_ACK_TIMEOUT：${name} 已被服务端受理，但 ` +
+                    `${WATCH_ACK_TIMEOUT_MS}ms 内没有收到任何 watch 下行。` +
+                    `上行通道正常、下行通道断 —— 请检查云开发控制台的集合权限：` +
+                    `rooms / games_gomoku / games_planehunt 必须设为「所有用户可读」，` +
+                    `否则 watch 静默失败（无报错也无回调）。`,
+            );
+        }, WATCH_ACK_TIMEOUT_MS);
     }
 
     /** 派发一条下行消息给所有订阅者。 */

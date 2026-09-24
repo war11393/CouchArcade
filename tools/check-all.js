@@ -21,6 +21,8 @@
  *  10. test-portrait-guards（竖版自适应短屏护栏数值仿真）
  *  11. validate-scenes（场景结构 / 路径契约 / 设计令牌）
  *  12. 云函数 common.js / server-ai.js 副本一致性
+ *  13. test-channel-lifecycle（通道生命周期：离开场景必须停 watch、看门狗可证伪）
+ *  14. test-ai-fullgame（云函数 AI 整局对拉：不会中途卡在 AI 回合并停不下来）
  */
 
 const { execFileSync } = require('child_process');
@@ -56,6 +58,8 @@ const steps = [
     { name: 'test-gomoku-ai-e2e（云函数 AI 回手端到端）', run: () => node('test-gomoku-ai-e2e.js') },
     { name: 'test-result-dialog（结算弹窗无蒙版）', run: () => node('test-result-dialog.js') },
     { name: 'test-thinking-overlay（对手思考中遮罩）', run: () => node('test-thinking-overlay.js') },
+    { name: 'test-channel-lifecycle（通道生命周期护栏）', run: () => node('test-channel-lifecycle.js') },
+    { name: 'test-ai-fullgame（云函数 AI 整局对拉）', run: () => node('test-ai-fullgame.js') },
     { name: 'test-portrait-guards（竖版护栏仿真）', run: () => node('test-portrait-guards.js') },
     { name: 'validate-scenes（场景校验）', run: () => node('validate-scenes.js') },
     {

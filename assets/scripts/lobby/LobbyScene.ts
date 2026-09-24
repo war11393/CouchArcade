@@ -178,12 +178,16 @@ export class LobbyScene extends Component {
                 {
                     label: 'AI 练习（无需等待）',
                     onPick: () => {
-                        console.log('[LobbyScene] 选择「AI 练习」→ gotoRoom(ai)');
-                        uiManager.gotoRoom({
-                            gameId: meta.id,
-                            mode: 'ai',
-                            aiLevel: AppConfig.DEFAULT_AI_LEVEL,
-                        });
+                        // ⚠️ 直达对局，**不经过房间页**（2026-09-24 需求）。
+                        //    原先走 uiManager.gotoRoom({mode:'ai'})，会先闪一下房间页
+                        //    再自动开局跳走 —— 玩家看到的是一个本不需要的中间态。
+                        //    现在由 UIManager.gotoAiPractice 在 Game 场景加载后完成
+                        //    「建房 → 开局 → 拉快照」，房间页全程不出现。
+                        console.log('[LobbyScene] 选择「AI 练习」→ 直达对局（跳过房间页）');
+                        void uiManager.gotoAiPractice(
+                            meta.id,
+                            AppConfig.DEFAULT_AI_LEVEL,
+                        );
                     },
                 },
             ],

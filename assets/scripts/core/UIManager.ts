@@ -44,6 +44,7 @@ import {
     newUINode,
 } from './UIFactory';
 import { FONT, RADIUS, overlayColor } from '../config/UITheme';
+import { services } from './ServiceLocator';
 
 const { ccclass } = _decorator;
 
@@ -82,7 +83,13 @@ export class UIManager {
 
     /** 跨场景参数中转。 */
     private _roomParams: RoomSceneParams | null = null;
-    private _gameParams: GameSceneParams | null = null;
+    /**
+     * 待消费的对局参数。
+     *
+     * 允许是**函数**（懒求值）：AI 练习需要先建房才知道 roomId，
+     * 而建房是异步云函数调用 —— 见 gotoGame / gotoAiPractice 的说明。
+     */
+    private _gameParams: GameSceneParams | (() => Promise<GameSceneParams>) | null = null;
     /** 当前 Toast 节点。 */
     private _toastNode: Node | null = null;
 
@@ -109,17 +116,70 @@ export class UIManager {
         this._load(SCENES.LOBBY);
     }
 
-    /** 跳转房间（创建/加入/AI 练习）。 */
+    /** 跳转房间（创建/加入）。 */
     public gotoRoom(params: RoomSceneParams): void {
         this._roomParams = params;
         this._gameParams = null;
         this._load(SCENES.ROOM);
     }
 
-    /** 跳转对局。 */
-    public gotoGame(params: GameSceneParams): void {
+    /**
+     * 跳转对局。
+     *
+     * `params` 支持传函数：在目标场景 `onLoad` 里**消费参数时**才求值。
+     *
+     * 为什么需要这个（2026-09-24「AI 练习不要闪房间页」）：
+     *   AI 练习的房间是**服务端建房时**才有 roomId 的，而建房本身是异步云函数调用。
+     *   若在点击那一刻 `await createRoom()` 再把结果塞进参数，玩家会先在大厅里
+     *   干等一次网络往返（按钮点了没反应，观感更差）；
+     *   而经 Room 场景中转，则一定会闪一下房间页（本需求的直接原因）。
+     *   传函数可以让 Game 场景**先加载、再取房间**——画面立刻出现，
+     *   异步建房在 `onLoad` 内完成，两边都不耽误。
+     */
+    public gotoGame(params: GameSceneParams | (() => Promise<GameSceneParams>)): void {
         this._gameParams = params;
         this._load(SCENES.GAME);
+    }
+
+    /**
+     * AI 练习直达：**建房 + 开局 + 进对局**，全程不经过房间页。
+     *
+     * 为什么放在 UIManager 而不是 LobbyScene（2026-09-24）：
+     *   这段逻辑原先散在 RoomScene（建房 → watch → 自动开局 → 切场景），
+     *   而「AI 练习不该看到房间页」这个需求要求它**能在没有 Room 场景的情况下**
+     *   跑完。放进 UIManager 后，大厅只需一行调用，将来「再来一局」也能复用。
+     *
+     * 流程（与服务端能力一一对应，缺一不可）：
+     *   1. createRoom(practice=true)  —— 服务端建库并**同时**填入 AI 座位（isAI + ready）
+     *   2. startGame                  —— 服务端生成 seed、建 games_gomoku 空棋局、rooms 置 playing
+     *   3. getRoomState               —— 取一份**权威**房间快照（含 AI 座位的 playerId）
+     *   4. gotoGame(懒加载函数)        —— 参数在 Game.onLoad 里求值，画面先出、房间后到
+     *
+     * ⚠️ 第 3 步不能省：AI 座位的 playerId（`ai-<roomId>-1`）是**服务端建房时**
+     *    生成的，客户端不拉快照就无从得知对手是谁，GameContext.opponent 会是空的。
+     *
+     * 失败处理：任一步失败都回大厅并 toast，不把玩家留在半初始化状态。
+     */
+    public async gotoAiPractice(gameId: GameId, aiLevel: AiLevel): Promise<void> {
+        services.room.leaveRoom().catch(() => undefined);
+        try {
+            await services.room.createRoom(gameId, true, aiLevel);
+            await services.room.startRoom();
+            const room = await services.room.getRoomState();
+            if (!room) {
+                throw new Error('房间快照为空（可能已被解散）');
+            }
+            console.log(
+                `[UIManager] AI 练习直达：roomId=${room.roomId} 状态=${
+                    room.status
+                } 座位=${room.seats.map((s) => `${s.nickname}${s.isAI ? '[AI]' : ''}`).join(',')}`,
+            );
+            this.gotoGame({ gameId, mode: 'ai', room });
+        } catch (err) {
+            console.error('[UIManager] AI 练习直达失败:', err);
+            this.toast(`AI 练习启动失败：${(err as Error).message}`, ToastLevel.ERROR);
+            this.gotoLobby();
+        }
     }
 
     /** 取出并清除 Room 参数。 */
@@ -128,9 +188,18 @@ export class UIManager {
         return p;
     }
 
-    /** 取出并清除 Game 参数。 */
-    public consumeGameParams(): GameSceneParams | null {
+    /**
+     * 取出并清除 Game 参数。
+     *
+     * ⚠️ 现在是 async：参数允许是一个「建房/准备房间」的异步函数（见 gotoGame）。
+     *    Room 场景是同步消费的（onLoad 非 async 分支），那边传的是普通对象，
+     *    await 一个非 thenable 值会原样返回，行为不变。
+     */
+    public async consumeGameParams(): Promise<GameSceneParams | null> {
         const p = this._gameParams;
+        if (typeof p === 'function') {
+            return await p();
+        }
         return p;
     }
 

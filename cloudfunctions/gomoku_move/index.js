@@ -31,6 +31,14 @@ exports.main = wrap('gomoku_move', async function (ctx, event) {
     const col = Number(event.col);
 
     const room = await requireRoom(ctx, roomId);
+
+    // ⚠️ 房间状态这道闸必须**最早**判定（2026-09-24 修正次序）。
+    //
+    // 原实现把 `game.currentPlayerId !== ctx.openid`（回合判定）放在它**之前**：
+    //   · 房间已结束时，玩家拿到的是误导性的「还没轮到你落子」（4008），
+    //     而真正原因是「对局未在进行中」（4003）—— 排查时方向被带偏；
+    //   · 更麻烦的是「结算/重开」路径：房间已 finished 时，客户端仍可能因为
+    //     本地状态滞后而补发一手，此时应明确拒绝，而不是先报回合错。
     if (room.status !== ROOM_STATUS.PLAYING) {
         throw new BizError(ERR.ROOM_ALREADY_STARTED, '对局未在进行中');
     }
@@ -72,12 +80,29 @@ exports.main = wrap('gomoku_move', async function (ctx, event) {
 
     // 五连检测（只测落子点四方向）
     const winCheck = checkWin(board, row, col, stone, game.winCount);
-    // 这三个会被 AI 回手改写，故用 let（const 会在回手时报
+
+    // 三个事实必须分开表达（曾经把它们混成一条链，会产生自相矛盾的文档）：
+    //   humanWin     —— 人类**这一手**是否成五
+    //   finished     —— 对局是否因**人类这一手**而结束（人类成五 / 下满和棋）
+    //   nextPlayerId —— 未因人类而结束时，下一手该谁
+    //
+    // ⚠️ 真机事故（2026-09-24）：原实现是无条件
+    //       finished = winCheck.win || 下满
+    //       nextPlayerId = finished ? game.currentPlayerId : otherPlayer(...)
+    //    在**人类成五**时把 nextPlayerId 写成了 game.currentPlayerId ——
+    //    也就是「人类自己」；随后 AI 回手分支把它覆盖成 AI。虽然最终赢了，
+    //    但中途落库的文档自相矛盾（finished=true 且 currentPlayerId=人类），
+    //    任何一端中途 watch 到这一帧都会得到错误回合。
+    const humanWin = winCheck.win;
+    const humanFilledBoard = moveCount >= game.size * game.size;
+    const finishedByHuman = humanWin || humanFilledBoard;
+    // 但这三个会被 AI 回手改写，故用 let（const 会在回手时报
     // "Assignment to constant variable" —— 端到端仿真抓到过）
-    let finished = winCheck.win || moveCount >= game.size * game.size;
-    let draw = !winCheck.win && finished;
-    let winnerId = winCheck.win ? ctx.openid : '';
-    let nextPlayerId = finished ? game.currentPlayerId : otherPlayer(room, ctx.openid);
+    let finished = finishedByHuman;
+    let draw = !humanWin && finished;
+    let winnerId = humanWin ? ctx.openid : '';
+    let nextPlayerId = finishedByHuman ? ctx.openid : otherPlayer(room, ctx.openid);
+
 
     await ctx.db.collection(colName).doc(game._id).update({
         data: {
@@ -98,6 +123,9 @@ exports.main = wrap('gomoku_move', async function (ctx, event) {
                 col: col,
                 stone: stone,
                 playerId: ctx.openid,
+                /** 客户端增量派发时用于推进本地回合（人类这手之后轮到谁） */
+                nextPlayerId: nextPlayerId,
+                finished: finished,
             },
             updatedAt: Date.now(),
         },
@@ -232,6 +260,16 @@ async function applyAiMoveIfNeeded(ctx, st) {
     const aiFinished = aiCheck.win || aiMoveCount >= st.size * st.size;
     const aiDraw = !aiCheck.win && aiFinished;
     const aiWinnerId = aiCheck.win ? seat.playerId : '';
+    // ⚠️ 「AI 回手之后轮到谁」必须以**AI 这一手的胜负**为准，不能沿用人类那手的值。
+    //
+    //     原实现在这里返回 `nextPlayerId = 人类`（finished=false），而调用方是
+    //     「人类那手写库 → 再判断 AI 是否回手 → 用 aiMove.nextPlayerId **覆盖**」。
+    //     人类那手的 nextPlayerId 在「人类自己成五」时等于**人类自己**（见上文
+    //     的 humanWin 分支），此时 finished=true 根本不会走到 AI 分支，所以那一条
+    //     是安全的；但**只要 AI 这一手自己成五**，AI 返回值若仍是「人类」，
+    //     调用方覆盖后就会落出「finished=true 且 currentPlayerId=人类」的矛盾文档。
+    //     这里统一为：AI 结束 → 停在 AI 自己（与人类成五时停在人类自己的口径一致，
+    //     即「最后一手方 = currentPlayerId」）；AI 未结束 → 交回人类（座位 0）。
     const nextPlayerId = aiFinished ? seat.playerId : st.room.seats[0].playerId;
 
     await ctx.db.collection(st.colName).doc(st.gameDocId).update({
@@ -251,6 +289,8 @@ async function applyAiMoveIfNeeded(ctx, st) {
                 col: decision.col,
                 stone: aiStone,
                 playerId: seat.playerId,
+                nextPlayerId: nextPlayerId,
+                finished: aiFinished,
             },
             updatedAt: Date.now(),
         },

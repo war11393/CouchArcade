@@ -547,6 +547,64 @@ console.log('=== 云函数 AI 回手端到端仿真 ===\n');
             'flips 里出现了 cells —— 会泄漏机头位置');
     }
 
+    console.log('\n场景 11：回合归属与胜负必须自洽（库文档不变式）');
+    {
+        // 为什么单独验证（2026-09-24）：原实现里「人类成五」时
+        //   nextPlayerId = finished ? game.currentPlayerId : otherPlayer(...)
+        // 会把回合写成**人类自己**，随后又被 AI 分支覆盖；AI 那手自己成五时
+        // 则可能留下「finished=true 且 currentPlayerId=人类」的矛盾文档。
+        // 中途 watch 到这种帧的客户端会算出错误回合 → 表现为「点了没反应」。
+        // 不变式：finished=true ⇒ 文档自洽（胜者存在或平局，且回合停在最后一手方）。
+        setup();
+        await callMove(HUMAN, 7, 7); // 人类一手 + AI 一手
+        let g = gameDoc();
+        check('正常手：未结束且回合在人类身上',
+            g.finished === false && g.currentPlayerId === HUMAN,
+            `finished=${g.finished} cur=${g.currentPlayerId}`);
+
+        // 造「人类立刻成五」：四连 + 补第五子
+        setup();
+        const g0 = gameDoc();
+        g0.board[7][3] = 1; g0.board[7][4] = 1; g0.board[7][5] = 1; g0.board[7][6] = 1;
+        g0.board[6][6] = 2;
+        g0.moveCount = 5;
+        g0.currentPlayerId = HUMAN;
+        await callMove(HUMAN, 7, 7);
+        g = gameDoc();
+        check('人类成五：finished=true 且胜者=人类',
+            g.finished === true && g.winnerId === HUMAN,
+            `finished=${g.finished} winner=${g.winnerId}`);
+        check('人类成五：回合不停在「接下来该人类下」的矛盾态',
+            g.currentPlayerId === HUMAN,
+            `currentPlayerId=${g.currentPlayerId}`);
+        check('人类成五：lastMove 的 nextPlayerId 与文档一致',
+            g.lastMove && g.lastMove.nextPlayerId === g.currentPlayerId,
+            `lastMove.nextPlayerId=${g.lastMove && g.lastMove.nextPlayerId} cur=${g.currentPlayerId}`);
+        check('人类成五：lastMove.finished 标记为 true',
+            g.lastMove && g.lastMove.finished === true,
+            `lastMove.finished=${g.lastMove && g.lastMove.finished}`);
+
+        // 造「AI 这手自己成五」：白四连，人类随便下一手不干扰，
+        // 逼 AI 补第五子取胜（AI 优先自己成五，见 gomokuDecide ①）
+        setup();
+        const g1 = gameDoc();
+        g1.board[5][5] = 2; g1.board[6][5] = 2; g1.board[7][5] = 2; g1.board[8][5] = 2;
+        g1.board[0][0] = 1;
+        g1.moveCount = 5;
+        g1.currentPlayerId = HUMAN;
+        const r1 = await callMove(HUMAN, 0, 1);
+        const g1After = gameDoc();
+        check('AI 自己成五：对局结束且胜者=AI',
+            g1After.finished === true && g1After.winnerId === AI,
+            `finished=${g1After.finished} winner=${g1After.winnerId} aiMove=${JSON.stringify(r1.data.aiMove)}`);
+        check('AI 自己成五：currentPlayerId 与文档自洽（= 最后一手方 AI）',
+            g1After.currentPlayerId === AI,
+            `currentPlayerId=${g1After.currentPlayerId}`);
+        check('AI 自己成五：lastMove.nextPlayerId 与文档一致',
+            g1After.lastMove && g1After.lastMove.nextPlayerId === g1After.currentPlayerId,
+            `lastMove=${JSON.stringify(g1After.lastMove)} cur=${g1After.currentPlayerId}`);
+    }
+
     console.log(`\n${fail === 0 ? 'ALL_GOMOKU_AI_E2E_PASSED' : 'GOMOKU_AI_E2E_FAILURES=' + fail}` +
         `  (${pass} 通过, ${fail} 失败)`);
     process.exit(fail === 0 ? 0 : 1);
