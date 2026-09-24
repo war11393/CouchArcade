@@ -177,6 +177,34 @@ console.log('\n场景 4：客户端解析回合时优先用 lastMove.nextPlayerI
         '说明断言可证伪');
 }
 
+// ---------------------------------------------------------------------
+console.log('\n场景 5：connect() 之前必须 setGameId（否则 watch 监听错集合）');
+{
+    // 为什么（2026-09-24 真机事故第二发）：WxNetSyncService 按 gameId 决定
+    //   watch 哪个集合，未设置时**静默回落到 rooms**（只有房间状态、没有棋步）。
+    //   上行云函数写库正常、下行永远等不到 —— 表现与权限问题几乎一样，
+    //   日志里那句 `gameId=未指定` 完全被淹没。修复=GameScene 在
+    //   game.onEnter()（内部 connect→_openWatch）之前调 netSync.setGameId()。
+    const game = read('assets/scripts/room/GameScene.ts');
+    check('GameScene 在 onEnter 之前调用 setGameId',
+        game.search(/netSync\.setGameId\(gameId\);/) >= 0 &&
+            game.search(/netSync\.setGameId\(gameId\);/) <
+                game.search(/^\s+game\.onEnter\(\);$/m),
+        'setGameId 必须在真实代码行上早于 game.onEnter() 调用（注释不算）');
+
+    const net = read('assets/scripts/core/services/wx/WxNetSyncService.ts');
+    check('_openWatch 对 gameId 未设置打 error 级告警（不再静默）',
+        /gameId 未设置[\s\S]{0,160}console\.error|console\.error\(\s*\n?\s*'?\[WxNetSync\] gameId 未设置/.test(net) &&
+            /gameId 未设置/.test(net),
+        '静默回落 rooms 是本次事故的直接形态，必须显式暴露');
+
+    const sabotaged = game.replace(/netSync\.setGameId\(gameId\);/, '');
+    check('反例自证：删掉 setGameId 调用后断言会失败',
+        sabotaged.indexOf('setGameId(gameId)') < 0 ||
+            sabotaged.indexOf('setGameId(gameId)') > sabotaged.indexOf('game.onEnter()'),
+        '说明断言可证伪');
+}
+
 console.log(`\n${fail === 0 ? 'ALL_CHANNEL_LIFECYCLE_PASSED' : 'CHANNEL_LIFECYCLE_FAILURES=' + fail}` +
     `  (${pass} 通过, ${fail} 失败)`);
 process.exit(fail === 0 ? 0 : 1);

@@ -272,6 +272,16 @@ export class WxNetSyncService implements INetSyncService {
         const collection = this._collectionForGame();
         const roomId = this._roomId;
 
+        // gameId 未设置 → 静默回落到监听 rooms，而 rooms 里**没有棋步**：
+        // 上行写库一切正常、下行永远等不到（2026-09-24 真机踩过，日志只有一句
+        // `gameId=未指定`，混在正常输出里完全看不见）。这里升级成显式告警。
+        if (!this._gameId) {
+            console.error(
+                '[WxNetSync] gameId 未设置，watch 只能监听 rooms（无棋步数据）—— ' +
+                    '对局下行必然收不到。调用方必须在 connect() 前 setGameId()（见 GameScene）。',
+            );
+        }
+
         this._unwatch = this._watchCollection(collection, { roomId }, (docs) => {
             if (!docs || docs.length === 0) {
                 return;
@@ -554,9 +564,11 @@ export class WxNetSyncService implements INetSyncService {
             console.error(
                 `[WxNetSync] WATCH_ACK_TIMEOUT：${name} 已被服务端受理，但 ` +
                     `${WATCH_ACK_TIMEOUT_MS}ms 内没有收到任何 watch 下行。` +
-                    `上行通道正常、下行通道断 —— 请检查云开发控制台的集合权限：` +
-                    `rooms / games_gomoku / games_planehunt 必须设为「所有用户可读」，` +
-                    `否则 watch 静默失败（无报错也无回调）。`,
+                    `上行通道正常、下行通道断，两个排查方向：` +
+                    `① 上面「已监听 xxx」日志 —— 集合必须是 games_gomoku/games_planehunt，` +
+                    `若是 rooms 说明 setGameId 没调（监听错了集合，收不到棋步）；` +
+                    `② 云开发控制台的集合权限：rooms / games_gomoku / games_planehunt ` +
+                    `必须设为「所有用户可读」，否则 watch 静默失败（无报错也无回调）。`,
             );
         }, WATCH_ACK_TIMEOUT_MS);
     }

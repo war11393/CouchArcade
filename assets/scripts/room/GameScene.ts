@@ -315,6 +315,24 @@ export class GameScene extends Component {
             console.log('[GameScene] 寻机头模块与棋盘已创建');
         }
 
+        // ⚠️ 告诉同步通道「本局是哪款游戏」—— 必须在 game.onEnter()（内部
+        //    net.connect → _openWatch）之前完成。
+        //
+        // setGameId 决定 watch 的集合：gomoku → games_gomoku、
+        // planehunt → games_planehunt；**未设置时回落到监听 rooms** ——
+        // rooms 里只有房间状态、没有棋步，于是上行（云函数写库）一切正常，
+        // 下行却永远等不到，真机表现为 WATCH_ACK_TIMEOUT「上行正常、下行断」。
+        // 当时日志里其实已写明 `gameId=未指定 / 已监听 rooms`，而提示文案
+        // 把人引向了集合权限 —— 这个教训也写进了看门狗注释。
+        // （pvp 与 ai 共用本方法，两条路径同时被修复。）
+        const netSync = services.netSync as unknown as { setGameId?: (g: GameId) => void };
+        if (typeof netSync.setGameId === 'function') {
+            netSync.setGameId(gameId);
+            console.log(`[GameScene] netSync.setGameId(${gameId}) 完成（watch 将监听对应集合）`);
+        } else {
+            console.warn('[GameScene] netSync 无 setGameId —— watch 会监听到错误的集合');
+        }
+
         // 统一生命周期：onEnter
         game.onEnter();
         this._startTimer();
