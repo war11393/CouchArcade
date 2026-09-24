@@ -56,13 +56,16 @@ export class WxAuthService implements IAuthService {
     public async login(): Promise<UserInfo> {
         const cached = this._storage.get<UserInfo>(STORAGE_KEYS.USER_INFO) ?? null;
 
-        // 上一轮已经降级过 → 直接用本地会话，不再重试云函数
-        // （否则每次冷启动都要等一次必失败的云调用，白白拖慢启动）
-        if (cached && cached.openid && this._isLocalId(cached.openid)) {
-            this._user = cached;
-            console.log(`[WxAuth] 沿用本地会话 id=${cached.openid}（云端登录此前未成功）`);
-            return cached;
-        }
+        // ⚠️ 曾经的短路：「上一轮降级过 → 直接复用本地会话，不再调云函数」，
+        //    理由写的是"云端失败绝大多数是配置问题，重试也一样"。
+        //    这个假设被证伪了（2026-09-24 真机）：**偶发失败**（冷启动网络抖动、
+        //    DevTools 刚重启）会把 local_ 会话永久钉进缓存 —— 之后哪怕云端早就
+        //    恢复（createRoom 都能成功），本地身份却永远对不上服务端座位，
+        //    表现为「座位信息异常，返回房间」的死循环。
+        //    现在：每次冷启动仍尝试云端 login；失败时若缓存里已有本地会话，
+        //    复用它（设备内稳定，不重新随机），代价只是一次启动延迟。
+        const previousLocal =
+            cached && cached.openid && this._isLocalId(cached.openid) ? cached : null;
 
         // 昵称/头像：优先用缓存里的（第二阶段若做了昵称填写能力，这里会带上）
         const nickname = cached?.nickname;
@@ -86,7 +89,14 @@ export class WxAuthService implements IAuthService {
 
             this._user = user;
             this._storage.set(STORAGE_KEYS.USER_INFO, user);
-            console.log(`[WxAuth] 登录成功 openid=${user.openid} nickname=${user.nickname}`);
+            if (previousLocal) {
+                console.log(
+                    `[WxAuth] 云端登录恢复：本地会话 ${previousLocal.openid} ` +
+                        `已升级为真 openid=${user.openid}`,
+                );
+            } else {
+                console.log(`[WxAuth] 登录成功 openid=${user.openid} nickname=${user.nickname}`);
+            }
             return user;
         } catch (err) {
             const code = err instanceof CloudError ? err.code : 9999;
@@ -102,20 +112,58 @@ export class WxAuthService implements IAuthService {
                 return cached;
             }
 
-            // 兜底 2：缓存不可用 → 造本地会话。
+            // 兜底 2：已有本地会话 → 复用（保持设备内稳定，不重新随机 id）
+            if (previousLocal) {
+                this._user = previousLocal;
+                console.warn(
+                    `[WxAuth] 云端仍不可用，沿用本地会话 id=${previousLocal.openid}；` +
+                        '若后续云调用成功，身份会被服务端返回值自动纠正',
+                );
+                return previousLocal;
+            }
+
+            // 兜底 3：缓存不可用 → 造本地会话。
             //
             // 为什么必须有这一层：云函数失败的原因绝大多数在服务端配置
             // （未部署 / 未选环境 / 权限），客户端重试多少次都一样。若这里抛错，
             // 唯一的结果是用户**永远卡在加载页**，而且连大厅都看不到 —— 一个
             // 「登录挂了」不应该等于「整个小游戏打不开」。
-            // 单人模式（AI 练习）根本不依赖服务端，必须能玩。
+            // 单人模式（AI 练习）的建房若随后成功，createRoom 会把身份纠正回
+            // 真 openid（见 WxRoomService 的 adoptServerIdentity 调用）。
             const local = await this._createLocalUser(cached, nickname, avatarUrl);
             console.warn(
                 `[WxAuth] 云端登录不可用，已降级为本地会话 id=${local.openid}；` +
-                    '联机功能（建房/匹配/云战绩）将不可用，请修复云函数后重启小游戏',
+                    '联机功能可能受限，请修复云函数后重启小游戏',
             );
             return local;
         }
+    }
+
+    /**
+     * 用**服务端权威身份**纠正本地降级会话（2026-09-24 新增）。
+     *
+     * 场景：冷启动时 login 云函数偶发失败 → 降级 `local_*`；随后 createRoom
+     * 成功，其响应 `ownerId` 就是服务端认定的"我"（云函数内 ctx.openid，
+     * 无法伪造）。此时必须把本地身份升级，否则 GameScene 拿 local id 去匹配
+     * 服务端座位必然失败（「座位信息异常」死循环）。
+     *
+     * 保守语义：只纠正 `local_*` 会话；已有真 openid 时**忽略**
+     * （防止任何调用点拿错字段把真身份改坏）。昵称保留本地值。
+     */
+    public adoptServerIdentity(openid: string): void {
+        const cur = this.getCachedUser();
+        if (!cur || !this._isLocalId(cur.openid)) {
+            return; // 非降级状态：真会话不接受纠正（幂等 + 防误用）
+        }
+        if (!openid || this._isLocalId(openid) || openid === cur.openid) {
+            return; // 服务端没给 / 给的也是 local / 完全相同
+        }
+        const user: UserInfo = { ...cur, openid };
+        this._user = user;
+        this._storage.set(STORAGE_KEYS.USER_INFO, user);
+        console.warn(
+            `[WxAuth] 身份已由服务端纠正：${cur.openid} → ${openid}（昵称=${user.nickname}）`,
+        );
     }
 
     /** 是否为本地生成的会话 id（非云端 openid）。 */

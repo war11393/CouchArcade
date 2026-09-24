@@ -235,6 +235,11 @@ export interface IAuthService {
     getCachedUser(): UserInfo | null;
     /** 更新昵称/头像（第二阶段走 wx.getUserProfile）。 */
     updateProfile(nickname: string, avatarUrl: string): Promise<UserInfo>;
+    /**
+     * 用服务端权威身份纠正本地降级会话（仅 Wx 实现提供；Mock 无需）。
+     * 调用点：createRoom/joinRoom 成功且响应 ownerId 与当前 local_ 会话不一致时。
+     */
+    adoptServerIdentity?(openid: string): void;
 }
 
 /**

@@ -88,7 +88,18 @@ export class GameScene extends Component {
         const mySeat = room.seats.find((s) => s.playerId === myPlayerId);
         const oppSeat = room.seats.find((s) => s.playerId !== myPlayerId && s.playerId !== '');
         if (!mySeat || !oppSeat) {
-            console.error('[GameScene] 座位信息异常，返回房间');
+            // 报错必须带**双方视角的细节**：「座位异常」的常见原因是客户端身份
+            // （登录降级产生的 local_* 会话）与服务端座位里的真 openid 对不上 ——
+            // 不打出 playerId 与座位清单，只看这一行日志根本无从下判断。
+            console.error(
+                '[GameScene] 座位信息异常，返回大厅 —— 我方id=' +
+                    (myPlayerId || '(空！auth.getCachedUser 为 null)') +
+                    ' 座位=[' +
+                    room.seats
+                        .map((s) => `${s.nickname || '(空)'}:${s.playerId || '(空位)'}`)
+                        .join(' | ') +
+                    ']',
+            );
             uiManager.gotoLobby();
             return;
         }

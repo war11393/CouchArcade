@@ -78,6 +78,13 @@ export class WxRoomService implements IRoomService {
         });
 
         this._rememberRoom(room?.roomId ?? null);
+        // ⚠️ 身份纠偏（2026-09-24 真机「座位信息异常」死循环）：
+        //   响应里的 ownerId 是云函数用 ctx.openid 写的 —— 服务端权威认定的"我"。
+        //   若本地正处于登录降级的 local_* 会话，必须当场升级，
+        //   否则后续 GameScene 拿 local id 匹配服务端座位必然失败。
+        if (room?.ownerId) {
+            this._auth.adoptServerIdentity?.(room.ownerId);
+        }
         console.log(`[WxRoom] 建房成功 roomId=${room.roomId} gameId=${room.gameId}`);
         return room;
     }
