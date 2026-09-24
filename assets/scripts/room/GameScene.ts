@@ -45,7 +45,12 @@ export class GameScene extends Component {
     private _timerHandle: ReturnType<typeof setInterval> | null = null;
     /** 剩余秒数。 */
     private _remainSec = AppConfig.TURN_TIME_LIMIT_SEC;
-    private _turnSeq = 0;
+    /**
+     * 本回合是否已报过超时（防刷屏闸）。
+     *
+     * 回合切换时由 `_resetTimer()` 复位 —— 每个回合只告警一次。
+     */
+    private _turnTimedOut = false;
     private _savedRecord = false;
 
     /** HUD 引用。 */
@@ -394,12 +399,39 @@ export class GameScene extends Component {
             this._remainSec--;
             this._refreshTimer();
             if (this._remainSec <= 0) {
-                // 超时：本阶段按「本地提示 + 由权威方判定」处理
-                console.warn('[GameScene] 本回合超时');
-                this._remainSec = AppConfig.TURN_TIME_LIMIT_SEC;
+                this._onTurnTimeout();
             }
         }, 1000);
         this._refreshTimer();
+    }
+
+    /**
+     * 本回合超时。
+     *
+     * ⚠️ 2026-09-24 修复（真机日志：超时告警每秒刷一次、连续刷屏）：
+     *   原实现把 `_remainSec` 重置回满值后**让计时器继续跑**，于是每满一个
+     *   周期就再喊一次「本回合超时」——无限刷屏，且**没有任何实际后果**
+     *   （不换回合、不提示玩家、服务端也没有超时处理）。
+     *
+     * 现在的处理：
+     *   1. **停表**（`_stopTimer`）—— 不刷屏，且倒计时不再误导；
+     *   2. 只告警一次（`_turnTimedOut` 闸，防同回合重复告警）；
+     *   3. 明确告诉玩家「这局不判超时，请继续落子」—— 因为**服务端没有
+     *      超时判定**，客户端若自行判负就是两端规则不一致（本项目的
+     *      一贯原则：判定权只在权威方）。等将来服务端加了超时踢人，
+     *      这里再改为「等待服务端判定」即可。
+     *
+     * 注意不要在这里切回合：客户端推演回合 = 与权威方抢判定权，
+     * 那正是「点了棋盘没反应」一类 bug 的老路（见 PlaneHuntRules 说明）。
+     */
+    private _onTurnTimeout(): void {
+        this._stopTimer();
+        if (this._turnTimedOut) {
+            return;
+        }
+        this._turnTimedOut = true;
+        console.warn('[GameScene] 本回合超时：已停止倒计时（服务端暂无超时判定，请继续落子）');
+        uiManager.toast('思考时间到～ 请继续落子', undefined);
     }
 
     private _stopTimer(): void {
@@ -417,11 +449,17 @@ export class GameScene extends Component {
         this._timerLabel.color = this._remainSec <= AppConfig.TURN_TIME_WARN_SEC ? THEME.danger : THEME.text;
     }
 
-    /** 回合切换时重置计时。 */
+    /**
+     * 回合切换时重置计时（并**重启**计时器）。
+     *
+     * ⚠️ 必须重启而不是只改数值：超时时 `_onTurnTimeout()` 会 `_stopTimer()`，
+     *   若这里只把 `_remainSec` 改回满值，下一个回合的倒计时**永远不会动**
+     *   （interval 已被清掉），也不会再触发超时 —— 表现为「计时器卡在 30s」。
+     */
     private _resetTimer(): void {
-        this._remainSec = AppConfig.TURN_TIME_LIMIT_SEC;
-        this._turnSeq++;
-        this._refreshTimer();
+        // 新回合 → 允许再次报超时（否则第二回合超时会静默无提示）
+        this._turnTimedOut = false;
+        this._startTimer(); // 内部会重置 _remainSec 并 refreshTimer
     }
 
     // ==================== HUD 刷新 ====================
