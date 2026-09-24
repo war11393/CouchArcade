@@ -50,7 +50,7 @@ export class AppConfig {
      * 用于 Loading 页展示与版本更新提示。发版时改这里
      * （微信小游戏自身的版本号由平台管理，两者不必一致，但建议同步）。
      */
-    public static readonly APP_VERSION = '0.1.1';
+    public static readonly APP_VERSION = '0.2.0';
 
     /**
      * 设计分辨率**基准**：竖屏主流机型 720 × 1280。
