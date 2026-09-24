@@ -116,48 +116,46 @@ console.log('\n场景 2：每个 watch 都必须有对应的「停」路径（�
 console.log('\n场景 3：watch 下行必须真的推进「回执」信号（看门狗不可恒触发）');
 {
     const src = read('assets/scripts/core/services/wx/WxNetSyncService.ts');
-    check('_handleGameDoc 里推进了 _watchAckSeq',
-        /private _handleGameDoc\(doc: GameDoc\): void \{[\s\S]{0,400}_watchAckSeq\+\+/.test(src),
+    check('_handleGameDoc 里推进了 _watchAckCount',
+        /private _handleGameDoc\(doc: GameDoc\): void \{[\s\S]{0,400}_watchAckCount\+\+/.test(src),
         '没有推进 → 看门狗会在每次都误报 WATCH_ACK_TIMEOUT');
-    check('看门狗在收到下行后会静默（比对序号）',
-        /_lastWatchAckSeq !== seq/.test(src),
-        '缺少「序号未变才报错」的判断，看门狗会变成无条件告警');
+    check('看门狗按「基线计数」比对（下行到得比 callFunction 返回快也不误报）',
+        /const baseline = this\._watchAckCount;/.test(src) &&
+            /_watchAckCount > baseline/.test(src),
+        '旧实现用「arm 时清零」判回执，而真机 watch 常先于 Promise 返回到达 → 每次落子必误报');
+    check('看门狗在 disconnect 时统一清理（不留残报）',
+        /for \(const t of this\._watchdogs\)/.test(src),
+        '离开对局后冒出的 WATCH_ACK_TIMEOUT 只会吓到下一次排查的人');
 
     // 反例自证
-    const sabotaged = src.replace(/this\._watchAckSeq\+\+/, '');
-    check('反例自证：删掉 _watchAckSeq++ 后断言会失败',
-        !/private _handleGameDoc\(doc: GameDoc\): void \{[\s\S]{0,400}_watchAckSeq\+\+/.test(sabotaged),
+    const sabotaged = src.replace(/this\._watchAckCount\+\+/, '');
+    check('反例自证：删掉 _watchAckCount++ 后断言会失败',
+        !/private _handleGameDoc\(doc: GameDoc\): void \{[\s\S]{0,400}_watchAckCount\+\+/.test(sabotaged),
+        '说明断言可证伪');
+    const sabotaged2 = src.replace(/const baseline = this\._watchAckCount;/, 'const baseline = 0;');
+    check('反例自证：基线清零（旧缺陷）后断言会失败',
+        !/const baseline = this\._watchAckCount;/.test(sabotaged2),
         '说明断言可证伪');
 }
 
 // ---------------------------------------------------------------------
-console.log('\n场景 3b：看门狗必须按「上行是否成功」分岔报错');
+console.log('\n场景 3b：上行失败必须当场报错 + 取消看门狗（不再延迟误导）');
 {
-    // 为什么（2026-09-24 真实教训）：gomoku_move 因**云端缺依赖**直接抛
-    //   `-504002 Cannot find module 'wx-server-sdk'`，上行根本没成功，
-    //   但看门狗统一报「上行正常、下行断 → 去查集合权限」，把排查方向带偏。
-    //   本断言锁住：看门狗必须区分「上行失败」与「上行成功但无下行」。
+    // 为什么（2026-09-24 两次真实误导）：
+    //   ① 云端缺依赖时，旧看门狗统一报「上行正常、下行断 → 查集合权限」；
+    //   ② watch 先于返回到达时，旧 arm 时机（返回之后）导致每次都误报。
+    //   现在：失败分支当场 console.error（含「云端缺依赖怎么修」）并 cancel；
+    //   只有「已受理但始终无下行」才由看门狗提示查集合/权限。
     const src = read('assets/scripts/core/services/wx/WxNetSyncService.ts');
-    check('_armWatchAckWatchdog 接收 upstreamOk 参数',
-        /_armWatchAckWatchdog\(name: string, upstreamOk: boolean\)/.test(src),
-        '没有该参数就无法区分两种失败');
-    check('调用处把上行结果传了进去',
-        /_armWatchAckWatchdog\(name, upstreamOk\)/.test(src),
-        '传了参数却没带进去，等于没分岔');
-    check('上行失败分支存在且提到 remote-npm-install',
-        /上行本身就失败了[\s\S]{0,400}remote-npm-install/.test(src),
-        '上行失败时必须明确指向「云端未安装依赖」这一最常见原因');
-    check('上行失败分支在「查集合权限」分支之前 return（不会两个都报）',
-        src.indexOf('上行本身就失败了') > 0 &&
-            src.indexOf('上行本身就失败了') < src.indexOf('必须设为「所有用户可读」'),
-        '顺序反了会让上行失败也去报集合权限');
-
-    const sabotaged = src.replace(/upstreamOk: boolean/, 'ignored: boolean')
-        .replace(/_armWatchAckWatchdog\(name, upstreamOk\)/, '_armWatchAckWatchdog(name, true)');
-    check('反例自证：去掉分岔后断言会失败',
-        !/upstreamOk: boolean/.test(sabotaged) &&
-            !/_armWatchAckWatchdog\(name, upstreamOk\)/.test(sabotaged),
-        '说明断言可证伪');
+    check('上行失败分支取消看门狗（≥3 处 cancelWatchdog：业务失败/空返回/catch）',
+        (src.match(/cancelWatchdog\(\);/g) || []).length >= 3,
+        `实际 ${(src.match(/cancelWatchdog\(\);/g) || []).length} 处`);
+    check('catch 分支对 Cannot find module 给出部署指引',
+        /Cannot find module[\s\S]{0,200}remote-npm-install/.test(src),
+        '缺依赖是踩过的坑，报错里必须直接写怎么修');
+    check('看门狗文案不再断言「已被服务端受理」（arm 早于返回，当时还不知道）',
+        !/WATCH_ACK_TIMEOUT：\$\{name\} 已被服务端受理/.test(src),
+        'arm 在发出前，报「已受理」是不诚实的措辞');
 }
 
 // ---------------------------------------------------------------------

@@ -263,6 +263,17 @@ export class GomokuGame implements IGame {
         );
     }
 
+    /** 预落子等待时长下限（毫秒）：服务端背靠背写库时，watch 两帧几乎同到，
+     *  不补一段「思考感」的话两颗子会同时蹦出来（2026-09-24 真机反馈）。 */
+    private static readonly AI_MIN_THINK_MS = 650;
+
+    /** 我乐观落在棋盘、等待权威回声的那一手（null = 无预落子）。 */
+    private _predicted: { row: number; col: number } | null = null;
+    /** 上一次上行的时刻（AI 一手的最小展示间隔从它起算）。 */
+    private _sentAt = 0;
+    /** 对手一手延迟应用的定时器（卸载时必须清，否则回调打在已销毁的棋盘上）。 */
+    private _aiHoldTimer: ReturnType<typeof setTimeout> | null = null;
+
     public onSyncMessage(msg: NetMessage): void {
         switch (msg.cmd) {
             case Cmd.GK_MOVE_RESULT: {
@@ -283,6 +294,19 @@ export class GomokuGame implements IGame {
                 // 全量状态补偿：逐条重放（幂等：已有棋子的位置会被跳过）
                 break;
             }
+            case Cmd.SYS_ERROR: {
+                // 权威拒绝了我们刚上行的一手（如「还没轮到你落子」）：
+                // 预落子的假子必须摘掉，否则本地与权威永久分叉
+                //（本地多一颗子，之后每一帧权威增量都会被幂等短路吞一半）。
+                // ⚠️ cmd 的取值两端不同：Mock 裁判回填的是协议名（gk.move），
+                //    真机 WxNetSync 回填的是**云函数名**（gomoku_move）—— 两个都要认。
+                const p = msg.payload as { cmd?: string; message?: string };
+                const mine = p && (p.cmd === Cmd.GK_MOVE || p.cmd === 'gomoku_move');
+                if (mine && this._predicted) {
+                    this._rollbackLocal();
+                }
+                break;
+            }
             default:
                 break;
         }
@@ -296,6 +320,10 @@ export class GomokuGame implements IGame {
     }
 
     public onExit(): void {
+        if (this._aiHoldTimer) {
+            clearTimeout(this._aiHoldTimer);
+            this._aiHoldTimer = null;
+        }
         if (this._unsub) {
             this._unsub();
             this._unsub = null;
@@ -325,8 +353,13 @@ export class GomokuGame implements IGame {
     /**
      * 玩家点击棋盘（由 GomokuBoard 回调）。
      *
-     * 双模式统一走协议：不直接改本地棋盘，而是发送上行请求，
-     * 等下行权威结果再更新 UI（与真实服务器模型一致，天然防作弊）。
+     * 双模式统一走协议：权威判定仍由下行完成，
+     * 但**本地先把自己的子乐观落上**（预落子），不等网络 ——
+     * 真机反馈「我的棋子总是要等 AI 下子时才出现」：方案 B 服务端背靠背
+     * 写人类与 AI 两手，两帧 watch 几乎同到，若等权威回声才落子，
+     * 两颗子就是「同时蹦出来」，观感上自己的手没有响应。
+     * 权威回声到达时按格匹配消费预测（见 _applyMoveResult）；
+     * 权威拒绝（SYS_ERROR）时回滚假子（见 _rollbackLocal）。
      */
     public onPlayerClick(row: number, col: number): void {
         if (this._finished || !this._rules) {
@@ -347,11 +380,20 @@ export class GomokuGame implements IGame {
             return;
         }
 
+        // 上一手的预测若仍挂着（极慢网络下玩家连点会被 isMyTurn 挡住，
+        // 这里只是防御性地先回滚，保证同一时刻至多一颗假子）
+        this._rollbackLocal();
+
         this._reqSeq++;
-        net.send(Cmd.GK_MOVE, { row, col, reqSeq: this._reqSeq });
+        this._sentAt = Date.now();
+        this._predicted = { row, col };
+        this._rules.applyMove(row, col, this._ctx.myPlayerId);
         if (this._board) {
+            this._board.placeStone(row, col, this._rules.stoneOf(this._ctx.myPlayerId) as Stone);
+            this._board.setInputEnabled(false);
             this._board.showThinking(true);
         }
+        net.send(Cmd.GK_MOVE, { row, col, reqSeq: this._reqSeq });
     }
 
     public surrender(): void {
@@ -375,7 +417,60 @@ export class GomokuGame implements IGame {
         if (!this._rules) {
             return;
         }
-        // 幂等：已存在棋子的位置跳过（重连补发场景）
+        const isMine = p.playerId === this._ctx.myPlayerId;
+
+        // ── 我方这一手的权威回声（与预落子同格）──
+        // 假子与红点已经在了：消费预测、按权威字段走结算即返回。
+        // ⚠️ 不能直接落进下面的幂等短路 —— 那是「重连补发」的路径；
+        //    我方**制胜的一手**若被短路吞掉，_finishGame 永远不会被调用，
+        //    表现是「赢了却没有结算弹窗」（预落子引入的最恶性回归点）。
+        if (isMine && this._predicted
+            && this._predicted.row === p.row && this._predicted.col === p.col) {
+            this._predicted = null;
+            if (p.win || p.draw) {
+                this._board?.showThinking(false);
+                // 制胜一手：假子已落，但获胜连线要等高亮数据到达后补画
+                // （winLine 由权威帧携带 —— 假子落子时还不知道会不会赢）
+                if (p.win && p.winLine && p.winLine.length > 0) {
+                    this._board?.drawWinLine(p.winLine);
+                }
+                this._finishGame(p.win ? p.playerId : '', p.draw, p.draw ? 'draw' : 'win');
+            }
+            // 未结束：遮罩保留，等对手（AI）那一手的权威帧
+            return;
+        }
+
+        // 其它幂等场景（断线重连补发的历史棋步）
+        if (this._rules.get(p.row, p.col) !== 0) {
+            return;
+        }
+
+        // ── 对手（AI）的一手：补足最小「思考感」再落 ──
+        // 服务端方案 B 是人类、AI 背靠背写库，两帧 watch 只差几百毫秒 ——
+        // 不补这段间隔，两颗子会「同时蹦出来」，观感就是
+        // 「我的棋子要等 AI 下了才落子」（2026-09-24 真机反馈）。
+        // 计时起点是**我方上行的时刻**：AI 真实耗时若已超过下限（慢网/冷启动），
+        // 不再额外拖。
+        const hold = Math.max(0, GomokuGame.AI_MIN_THINK_MS - (Date.now() - this._sentAt));
+        if (!isMine && hold > 0) {
+            if (this._aiHoldTimer) {
+                clearTimeout(this._aiHoldTimer);
+            }
+            this._aiHoldTimer = setTimeout(() => {
+                this._aiHoldTimer = null;
+                this._commitOpponentMove(p);
+            }, hold);
+            return;
+        }
+        this._commitOpponentMove(p);
+    }
+
+    /** 应用对手的一手（延迟窗口结束后；见 _applyMoveResult 的「思考感」注释）。 */
+    private _commitOpponentMove(p: GkMoveResultPayload): void {
+        if (!this._rules || this._finished) {
+            return;
+        }
+        // 二次幂等：延迟期间可能已有别的帧把它落了（重连重放）
         if (this._rules.get(p.row, p.col) !== 0) {
             return;
         }
@@ -392,6 +487,26 @@ export class GomokuGame implements IGame {
         if (p.win || p.draw) {
             const winner = p.win ? p.playerId : '';
             this._finishGame(winner, p.draw, p.draw ? 'draw' : 'win');
+        }
+    }
+
+    /**
+     * 摘掉预落子的假子（权威拒绝时回滚，见 onSyncMessage 的 SYS_ERROR 分支）。
+     * 只回滚「预测中的那一手」，且预测必然在 history 末尾 —— undoLastMove 是精确撤销。
+     */
+    private _rollbackLocal(): void {
+        if (!this._predicted || !this._rules) {
+            return;
+        }
+        this._predicted = null;
+        const undone = this._rules.undoLastMove();
+        if (undone && this._board) {
+            this._board.removeStone(undone.row, undone.col);
+            this._board.showThinking(false);
+            // 回滚后回合也回到了我方（undo 还原 currentPlayerId），允许重试
+            this._board.setInputEnabled(
+                !this._rules.finished && this._rules.currentPlayerId === this._ctx.myPlayerId,
+            );
         }
     }
 

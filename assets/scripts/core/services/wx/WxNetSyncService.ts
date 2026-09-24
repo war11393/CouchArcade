@@ -81,15 +81,16 @@ export class WxNetSyncService implements INetSyncService {
     private _gameOverDispatched = false;
 
     /**
-     * watch 回执看门狗用的序号。
+     * watch 下行计数与看门狗句柄集合。
      *
-     * 语义：`_lastWatchAckSeq` 在**收到任何 watch 下行**时被推进到当前值。
-     * 每次上行走完就记下当时的序号，超时后比对 —— 序号没变说明这一段时间
-     * 内一条下行都没到（上行通、下行断），这个判断是**可证伪**的：
-     * 只要有任何一条 watch 推送到达，看门狗就会静默。
+     * 语义：`_watchAckCount` 在收到任何一条对局 watch 下行时 +1；
+     * 每次发上行请求前记下基线，`WATCH_ACK_TIMEOUT_MS` 后比对 ——
+     * 计数没超过基线 = 请求发出后一条下行都没到过（下行通道断）。
+     * `_watchdogs` 收集所有在途定时器，disconnect 时统一清理，
+     * 避免对局结束/切场景之后残留一条吓人的误报。
      */
-    private _watchAckSeq = 0;
-    private _lastWatchAckSeq = 0;
+    private _watchAckCount = 0;
+    private readonly _watchdogs = new Set<ReturnType<typeof setTimeout>>();
 
     // ==================== 对外接口实现 ====================
 
@@ -192,6 +193,11 @@ export class WxNetSyncService implements INetSyncService {
     }
 
     public disconnect(): void {
+        // 清掉所有在途看门狗：对局已离开，再冒一条「下行通道断」只会吓人。
+        for (const t of this._watchdogs) {
+            clearTimeout(t);
+        }
+        this._watchdogs.clear();
         this._closeWatch();
         this._setStatus(NetStatus.DISCONNECTED);
         console.log('[WxNetSync] 已断开');
@@ -379,10 +385,9 @@ export class WxNetSyncService implements INetSyncService {
      * 只派发新增部分 —— 重连后 watch 会重放全量快照，不去重会导致棋步重复应用。
      */
     private _handleGameDoc(doc: GameDoc): void {
-        // 任何一条 watch 下行到达 → 推进序号，让「上行后等不到下行」的看门狗静默。
+        // 任何一条 watch 下行到达 → 计数 +1（所有看门狗的基线比对都靠它）。
         // 放在最前面：即使这一帧不含增量（moveCount 没变），也证明确实「收到了下行」。
-        this._watchAckSeq++;
-        this._lastWatchAckSeq = this._watchAckSeq;
+        this._watchAckCount++;
 
         // ---- 五子棋 ----
         if (this._gameId === GameId.GOMOKU) {
@@ -455,17 +460,46 @@ export class WxNetSyncService implements INetSyncService {
         name: string,
         data: Record<string, unknown>,
     ): Promise<void> {
-        // 上行是否成功 —— 看门狗要据此分岔（见 _armWatchAckWatchdog）。
-        // 缺了它，看门狗会把「上行就失败了」也报成「下行通道断」，
-        // 上一次真机排查就被这条误导过：真正原因是云函数依赖缺失
-        // （Cannot find module 'wx-server-sdk'），日志却让去查集合权限。
-        let upstreamOk = false;
+        // ── 看门狗：watch 下行回执监视 ──
+        // ⚠️ 计时必须在**发出请求之前**开始（2026-09-24 真机日志实锤的误报）。
+        //   旧实现在 callFunction **返回之后**才 arm —— 但 watch 下行经常比
+        //   Promise 返回更早到（用户日志时序：↓ gk.move.result ×2 出现在
+        //   ↑ 已受理 之前）。arm 时把「已收到的下行」清零，之后自然
+        //   「4 秒无下行」→ 每次落子都误报一次「下行通道断」。
+        //   现在：arm 时记下**当前下行计数为基线**，请求发出后的任何一条下行
+        //   （哪怕到得比返回快）都会使计数超过基线 → 超时比对不通过 → 静默。
+        //
+        // 上行失败时直接 cancel —— 错误已当场打出（下面各分支），
+        // 没必要 4 秒后再补一句；「该往哪查」写进各条即时日志里
+        // （旧版把「云端未装依赖」的提示放进阶梯超时里，结果误导过一次排查）。
+        const baseline = this._watchAckCount;
+        const watchdog = setTimeout(() => {
+            this._watchdogs.delete(watchdog);
+            if (this._watchAckCount > baseline) {
+                return; // 请求发出后收到过下行 → 通道正常，静默
+            }
+            console.error(
+                `[WxNetSync] WATCH_ACK_TIMEOUT：${name} 请求已发出，但 ` +
+                    `${WATCH_ACK_TIMEOUT_MS}ms 内没有任何 watch 下行。两个排查方向：` +
+                    `① 上方「已监听 xxx」日志 —— 集合必须是 games_gomoku/games_planehunt，` +
+                    `若是 rooms 说明 setGameId 没调（监听错了集合，收不到棋步）；` +
+                    `② 云开发控制台的集合权限：rooms / games_gomoku / games_planehunt ` +
+                    `必须设为「所有用户可读」，否则 watch 静默失败（无报错也无回调）。`,
+            );
+        }, WATCH_ACK_TIMEOUT_MS);
+        this._watchdogs.add(watchdog);
+        const cancelWatchdog = (): void => {
+            clearTimeout(watchdog);
+            this._watchdogs.delete(watchdog);
+        };
+
         try {
             const res = await wx.cloud.callFunction({ name, data });
             const envelope = (res as { result?: { success?: boolean; code?: number; message?: string } })
                 .result;
 
             if (envelope && envelope.success === false) {
+                cancelWatchdog();
                 console.warn(
                     `[WxNetSync] ${name} 业务失败 code=${envelope.code} msg=${envelope.message}`,
                 );
@@ -486,10 +520,13 @@ export class WxNetSyncService implements INetSyncService {
                 //    success===false，于是「未部署」被当成功，客户端继续死等 watch
                 //    （watch 又没有数据），表现为「落子无反应 + 卡在对手思考中」，
                 //    且**一条日志都没有**。这里显式暴露。
+                cancelWatchdog();
                 const raw = res as { errCode?: number; errMsg?: string };
                 console.error(
                     `[WxNetSync] ${name} 返回体为空（疑似云函数未部署 / 未返回信封）` +
-                        ` errCode=${raw?.errCode ?? '无'} errMsg=${raw?.errMsg ?? '无'}`,
+                        ` errCode=${raw?.errCode ?? '无'} errMsg=${raw?.errMsg ?? '无'}；` +
+                        `最常见原因是云端未安装依赖 —— 用 ` +
+                        `node tools/deploy-cloudfunctions.js（带 --remote-npm-install）重新部署`,
                 );
                 this._dispatch(
                     makeEnvelope(Cmd.SYS_ERROR, this._roomId, this._playerId, {
@@ -501,17 +538,32 @@ export class WxNetSyncService implements INetSyncService {
                 return;
             }
 
-            // 成功：打印一行「已受理」，与下面的 watch 回执配对排查。
-            upstreamOk = true;
-            console.log(
-                `[WxNetSync] ↑ ${name} 已受理 code=${envelope.code}` +
-                    `（等待 watch 下行回执；若无回执见 WATCH_ACK_TIMEOUT）`,
-            );
+            if (envelope.success === true) {
+                // 成功且已受理：保留看门狗 —— 「受理」只证明写库，
+                // 不证明 watch 推得回来（两条通道独立）。
+                console.log(
+                    `[WxNetSync] ↑ ${name} 已受理 code=${envelope.code}`,
+                );
+            } else {
+                // success 既非 true 也非 false：形状不认识，按失败处理，别死等
+                cancelWatchdog();
+                console.error(
+                    `[WxNetSync] ${name} 信封形状异常（success=${String(envelope.success)}），` +
+                        `原始返回=${JSON.stringify(res).slice(0, 200)}`,
+                );
+            }
             // 注意：成功时不在此派发棋步 —— 棋步由 watch 下行统一派发，
             // 保证「本机操作」与「对手操作」走完全相同的路径（与 Mock 语义一致）。
         } catch (err) {
+            cancelWatchdog();
             const msg = (err as { errMsg?: string })?.errMsg ?? String(err);
-            console.error(`[WxNetSync] ${name} 调用失败: ${msg}`);
+            console.error(
+                `[WxNetSync] ${name} 调用失败: ${msg}` +
+                    (msg.includes('Cannot find module')
+                        ? ' —— 云端缺依赖：用 node tools/deploy-cloudfunctions.js ' +
+                          '（带 --remote-npm-install）重新部署该函数'
+                        : ''),
+            );
             this._dispatch(
                 makeEnvelope(Cmd.SYS_ERROR, this._roomId, this._playerId, {
                     code: ERR.CALL_FAIL,
@@ -519,58 +571,7 @@ export class WxNetSyncService implements INetSyncService {
                     cmd: name,
                 }),
             );
-        } finally {
-            this._armWatchAckWatchdog(name, upstreamOk);
         }
-    }
-
-    /**
-     * watch 回执看门狗：上行被服务端受理后，若在超时窗口内**没有任何 watch 下行**，
-     * 就明确报出「落子这步的可见性断了」。
-     *
-     * 为什么必须加（2026-09-24 真机事故）：
-     *   上行（云函数）与下行（watch）是**两条独立的通道**。
-     *   `gomoku_move` 返回 success 只证明「写库成功」，不证明 watch 能推回来。
-     *   集合权限不是「所有用户可读」时 watch **静默失败**（无错、无回调），
-     *   而此时上行日志一切正常、界面只卡在「对手思考中」——
-     *   排查时最耗时的就是这种「看起来哪里都对」。
-     *
-     * @param upstreamOk 上行是否成功。
-     *   ⚠️ 必须分岔报错，否则会误导排查方向（真实教训，2026-09-24）：
-     *     当时 `gomoku_move` 因为**云端缺依赖**（`-504002 Cannot find module
-     *     'wx-server-sdk'`）直接抛错，上行根本没成功；可看门狗却统一报
-     *     「上行通道正常、下行通道断 → 去查集合权限」，把方向带到了完全错误的
-     *     地方。现在：上行失败 → 直接说「上行失败，看上面那条错误」；
-     *     只有上行确实成功、却仍无下行，才提示去查集合权限。
-     */
-    private _armWatchAckWatchdog(name: string, upstreamOk: boolean): void {
-        this._watchAckSeq++;
-        const seq = this._watchAckSeq;
-        this._lastWatchAckSeq = seq;
-        setTimeout(() => {
-            // 期间已经有下行 → 正常，什么都不做
-            if (this._lastWatchAckSeq !== seq) {
-                return;
-            }
-            if (!upstreamOk) {
-                console.error(
-                    `[WxNetSync] WATCH_ACK_TIMEOUT：${name} **上行本身就失败了**` +
-                        `（见上方 callFunction 错误），因此不会有任何 watch 下行。` +
-                        `请先修上行 —— 最常见的是云函数未部署或**云端未安装依赖**：` +
-                        `用 cli cloud functions deploy --remote-npm-install 重新部署。`,
-                );
-                return;
-            }
-            console.error(
-                `[WxNetSync] WATCH_ACK_TIMEOUT：${name} 已被服务端受理，但 ` +
-                    `${WATCH_ACK_TIMEOUT_MS}ms 内没有收到任何 watch 下行。` +
-                    `上行通道正常、下行通道断，两个排查方向：` +
-                    `① 上面「已监听 xxx」日志 —— 集合必须是 games_gomoku/games_planehunt，` +
-                    `若是 rooms 说明 setGameId 没调（监听错了集合，收不到棋步）；` +
-                    `② 云开发控制台的集合权限：rooms / games_gomoku / games_planehunt ` +
-                    `必须设为「所有用户可读」，否则 watch 静默失败（无报错也无回调）。`,
-            );
-        }, WATCH_ACK_TIMEOUT_MS);
     }
 
     /** 派发一条下行消息给所有订阅者。 */

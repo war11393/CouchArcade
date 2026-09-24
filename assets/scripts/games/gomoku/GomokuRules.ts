@@ -246,6 +246,38 @@ export class GomokuRules {
         return true;
     }
 
+    /**
+     * 撤销最后一步（**仅供预落子回滚**使用，见 GomokuGame 的乐观渲染说明）。
+     *
+     * 规则上五子棋不允许悔棋 —— 本方法不是给玩家用的，而是：客户端为了手感
+     * 把「自己这一手」先行落上棋盘（权威结果到达前），若权威方拒绝了这一手
+     * （SYS_ERROR），必须能把这颗「假子」干净地摘掉，否则本地状态与权威永久分叉。
+     *
+     * ⚠️ 必须还原 applyMove 动过的**全部**状态：_board / _moves / _history /
+     *    _lastMove / _currentPlayerId（回到落子方的回合）。少还原一个字段，
+     *    下一次权威落子就会把「已回滚的格子」当成有子而跳过（幂等短路）
+     *    或把回合算错 —— 都是极难查的「看不出问题」级 bug。
+     *
+     * @returns 被撤销的那一步（无棋可撤时 null）
+     */
+    public undoLastMove(): GomokuMove | null {
+        const move = this._history.pop();
+        if (!move) {
+            return null;
+        }
+        this._board[move.row * this.size + move.col] = 0;
+        this._moves--;
+        this._finished = false;
+        this._winnerId = '';
+        this._draw = false;
+        this._winLine = [];
+        this._lastMove = this._history.length > 0
+            ? this._history[this._history.length - 1]
+            : null;
+        this._currentPlayerId = move.playerId;
+        return move;
+    }
+
     /** 投降判负。 */
     public surrender(playerId: string): void {
         if (this._finished) {

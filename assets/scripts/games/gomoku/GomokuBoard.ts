@@ -223,6 +223,23 @@ export class GomokuBoard extends Component {
     }
 
     /**
+     * 摘掉一颗棋子（预落子回滚用，见 GomokuGame._rollbackLocal）。
+     * 同时清掉「最后一手」标记 —— 回滚后那枚红点若留在原地，会指向一个空格。
+     */
+    public removeStone(row: number, col: number): void {
+        const idx = row * this._renderer.getSize().cols + col;
+        const node = this._stoneNodes.get(idx);
+        if (node) {
+            node.destroy();
+            this._stoneNodes.delete(idx);
+        }
+        if (this._lastMark) {
+            this._lastMark.destroy();
+            this._lastMark = null;
+        }
+    }
+
+    /**
      * 显示/隐藏「对手思考中」。
      *
      * 实现已上移到共用基类 BoardBase（半透明蒙层 + 居中胶囊，并顺带禁用棋盘输入）——
@@ -236,6 +253,14 @@ export class GomokuBoard extends Component {
     /** 棋盘布局描述（调试）。 */
     public describe(): string {
         return this._renderer.describe();
+    }
+
+    /**
+     * 公开补画获胜连线（预落子的制胜一手：假子先落，权威帧到达后补高亮）。
+     * 内部幂等：同一条线重复调用会叠出多个 winLine 节点 —— 调用方保证只画一次。
+     */
+    public drawWinLine(line: Array<{ row: number; col: number }>): void {
+        this._drawWinLine(line);
     }
 
     // ==================== 内部 ====================
