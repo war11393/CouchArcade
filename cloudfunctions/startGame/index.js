@@ -168,6 +168,95 @@ async function createPlaneHuntGame(ctx, room, seed, now) {
     console.log(
         `[startGame] 寻机头布局已生成 seed=${seed} 机头数=${layout.heads.length} fingerprint=${layout.fingerprint}`,
     );
+
+    // ⚠️ 这是**权威布局**，客户端不持有完整 cells（只存 seed）。
+    //    要核对「飞机形态对不对」必须看这里的输出，客户端的
+    //    PlaneHuntLayout 只在 Mock/编辑器模式生效。
+    //    2026-09-24 加：按用户要求把开局完整棋盘打到云函数日志。
+    dumpPlaneLayout(layout, seed, room.roomId);
+}
+
+/**
+ * 把布局打成 ASCII 图（云函数日志核对用）。
+ *
+ * 两张图：
+ *   ① 内容图：H=机头(2)  #=机身(1)  ·=空格(0)
+ *   ② 归属图：同一字母 = 同一架飞机（a..e）
+ * 归属图是关键 —— 相邻两架飞机挤在一起时，形态问题与「两架拼一起」
+ * 看起来一样，只有按编号才能一眼分清。
+ *
+ * 并逐架校验格数：每架应为 11 格（1 机头 + 10 机身），有偏差即告警。
+ */
+function dumpPlaneLayout(layout, seed, roomId) {
+    const size = layout.size;
+    const cells = layout.cells;
+    const heads = layout.heads;
+    const LETTERS = 'abcdefghij';
+    const lines = [];
+
+    lines.push(`[startGame] ===== 布局 dump roomId=${roomId} seed=${seed} ${size}×${size} =====`);
+    lines.push('[startGame] 图例： H=机头(2)  #=机身(1)  ·=空格(0)');
+    lines.push('[startGame]      ' + Array.from({ length: size }, function (_, c) {
+        return String(c % 10);
+    }).join(' '));
+    for (let r = 0; r < size; r++) {
+        const row = cells[r].map(function (v) {
+            return v === 2 ? 'H' : v === 1 ? '#' : '·';
+        }).join(' ');
+        lines.push('[startGame] ' + String(r).padStart(2, ' ') + ' | ' + row);
+    }
+
+    // 归属图：同一字母 = 同一架飞机。这是本次 dump 的重点 ——
+    // 「形态错」与「两架飞机挨在一起看着像一架畸形」在内容图上长得一样，
+    // 只有按编号才能一眼分清。
+    if (Array.isArray(layout.planeIndexAt)) {
+        lines.push('[startGame] ---- 按飞机编号（同一字母 = 同一架）----');
+        lines.push('[startGame]      ' + Array.from({ length: size }, function (_, c) {
+            return String(c % 10);
+        }).join(' '));
+        for (let r = 0; r < size; r++) {
+            const row = layout.planeIndexAt[r].map(function (i) {
+                return i >= 0 ? LETTERS[i % LETTERS.length] : '·';
+            }).join(' ');
+            lines.push('[startGame] ' + String(r).padStart(2, ' ') + ' | ' + row);
+        }
+    } else {
+        lines.push('[startGame] （无 planeIndexAt，跳过归属图）');
+    }
+
+    // 逐架格数校验：形态矩阵非零格数 = 11
+    const EXPECTED = PLANE_SHAPE.reduce(function (n, row) {
+        return n + row.filter(function (v) { return v !== 0; }).length;
+    }, 0);
+    lines.push('[startGame] ---- 各架明细（基准 ' + EXPECTED + ' 格 = 1 机头 + ' + (EXPECTED - 1) + ' 机身）----');
+    let bad = 0;
+    const indexAt = layout.planeIndexAt;
+    for (let i = 0; i < heads.length; i++) {
+        let body = 0;
+        for (let r = 0; r < size; r++) {
+            for (let c = 0; c < size; c++) {
+                if (indexAt && indexAt[r][c] === i && cells[r][c] === 1) {
+                    body++;
+                }
+            }
+        }
+        const total = indexAt ? body + 1 : -1;
+        const flag = indexAt ? (total === EXPECTED ? '' : '  ⚠️ 格数异常！') : '  (无归属图，跳过)';
+        if (flag.indexOf('⚠️') >= 0) {
+            bad++;
+        }
+        lines.push(
+            '[startGame]   第 ' + i + ' 架(' + LETTERS[i % LETTERS.length] + '): 机头=(' +
+            heads[i].row + ',' + heads[i].col + ') 机身=' + body + ' 合计=' + total + flag,
+        );
+    }
+    if (bad > 0) {
+        lines.push('[startGame] ⚠️ 有 ' + bad + ' 架飞机格数不等于基准 —— 形态矩阵或放置逻辑有问题');
+    } else if (heads.length > 0 && indexAt) {
+        lines.push('[startGame] ✅ 全部 ' + heads.length + ' 架格数正常');
+    }
+
+    console.log(lines.join('\n'));
 }
 
 /** 创建五子棋权威对局。 */
@@ -225,10 +314,21 @@ function generatePlaneLayout(seed, size, planeCount) {
 
     const heads = [];
     const rotations = [0, 90, 180, 270];
-    const occupied = new Set();
     const key = function (r, c) {
         return r * size + c;
     };
+    /**
+     * 已占用的**实体格**集合，用于重叠检测。
+     *
+     * ⚠️ 2026-09-24 实测记录：约束只能是「实体格不重叠」。
+     *   12×12 棋盘放 5 架十字战机时，任何「不许相邻」的加强约束都无解：
+     *     · 实体格 8 邻域互斥 → 回溯 65641 节点无解
+     *     · 间隔 1 格空气     → 回溯 1145 节点无解
+     *     · 仅实体格不重叠     → 6 节点即有解
+     *   所以**不要**试图加间距约束（会让布局生成失败）。飞机形态的
+     *   正确性由 dumpPlaneLayout 逐架自检保证（每架恰好 10 格）。
+     */
+    const occupied = new Set();
 
     let placed = 0;
     let retry = 0;
@@ -253,6 +353,7 @@ function generatePlaneLayout(seed, size, planeCount) {
                 }
                 const gr = originRow + r;
                 const gc = originCol + c;
+                // 与已放置飞机：**实体格不得重叠**（唯一可行约束，见 occupied 说明）
                 if (occupied.has(key(gr, gc))) {
                     overlap = true;
                     break;
@@ -291,6 +392,13 @@ function generatePlaneLayout(seed, size, planeCount) {
     return {
         cells: cells,
         heads: heads,
+        /**
+         * 格子 → 飞机编号（-1 = 非飞机）。**不入库**（权威布局含机身信息，
+         * 与 cells 同级别敏感），仅供日志 dump 核对「哪几格属于同一架」用。
+         * 2026-09-24 加：dumpPlaneLayout 要靠它画归属图。
+         */
+        planeIndexAt: planeIndexAt,
+        size: size,
         fingerprint: fingerprint(seed, heads),
     };
 }
