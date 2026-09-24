@@ -205,13 +205,87 @@ export class PlaneHuntLayoutProvider implements ILayoutProvider {
             );
         }
 
-        return {
+        const layout: PlaneLayout = {
             size,
             cells,
             planeIndexAt,
             heads,
             fingerprint: this._fingerprint(seed, heads),
         };
+
+        // 开局打印完整棋盘（人工核对形态用）。
+        // ⚠️ 这是**客户端本地**那份（由 seed 推导的影子布局），
+        //    翻格结果仍以云端权威下发为准；但核对「形态对不对」看这份即可
+        //    —— 两端用同一套生成算法，正常应完全一致。
+        this.dumpLayout(layout, seed);
+
+        return layout;
+    }
+
+    /**
+     * 把完整布局打成 ASCII 图输出到控制台（人工核对用）。
+     *
+     * 图例： `H` 机头(2)   `#` 机身(1)   `·` 空格(0)
+     *
+     * 三块内容：
+     *   ① 内容图（带行列号）
+     *   ② 归属图：同一字母 = 同一架飞机 —— 「形态错」与「两架挨在一起
+     *      看着像一架」在内容图上长得一模一样，只有按编号才分得清
+     *   ③ 逐架明细 + 格数自检（基准 10 格 = 1 机头 + 9 机身，异常打 ⚠️）
+     */
+    public dumpLayout(layout: PlaneLayout, seed: number): void {
+        const { size, cells, planeIndexAt, heads } = layout;
+        const LETTERS = 'abcdefghij';
+        const header = `${Array.from({ length: size }, (_, c) => String(c % 10)).join(' ')}`;
+
+        const lines: string[] = [];
+        lines.push(`[PlaneHuntLayout] ===== 布局 dump seed=${seed} ${size}×${size} =====`);
+        lines.push('[PlaneHuntLayout] 图例： H=机头(2)  #=机身(1)  ·=空格(0)');
+        lines.push(`[PlaneHuntLayout]      ${header}`);
+        for (let r = 0; r < size; r++) {
+            const row = cells[r]
+                .map((v) => (v === CELL_HEAD ? 'H' : v === CELL_BODY ? '#' : '·'))
+                .join(' ');
+            lines.push(`[PlaneHuntLayout] ${String(r).padStart(2, ' ')} | ${row}`);
+        }
+
+        lines.push('[PlaneHuntLayout] ---- 按飞机编号（同一字母 = 同一架）----');
+        lines.push(`[PlaneHuntLayout]      ${header}`);
+        for (let r = 0; r < size; r++) {
+            const row = planeIndexAt[r]
+                .map((i) => (i >= 0 ? LETTERS[i % LETTERS.length] : '·'))
+                .join(' ');
+            lines.push(`[PlaneHuntLayout] ${String(r).padStart(2, ' ')} | ${row}`);
+        }
+
+        const expected = PLANE_SHAPE.reduce((n, row) => n + row.filter((v: number) => v !== 0).length, 0);
+        lines.push(`[PlaneHuntLayout] ---- 各架明细（基准 ${expected} 格 = 1 机头 + ${expected - 1} 机身）----`);
+        let bad = 0;
+        for (let i = 0; i < heads.length; i++) {
+            let body = 0;
+            for (let r = 0; r < size; r++) {
+                for (let c = 0; c < size; c++) {
+                    if (planeIndexAt[r][c] === i && cells[r][c] === CELL_BODY) {
+                        body++;
+                    }
+                }
+            }
+            const total = body + 1;
+            const flag = total === expected ? '' : '  ⚠️ 格数异常！';
+            if (flag) {
+                bad++;
+            }
+            lines.push(
+                `[PlaneHuntLayout]   第 ${i} 架(${LETTERS[i % LETTERS.length]}): 机头=(${heads[i].row},${heads[i].col}) 机身=${body} 合计=${total}${flag}`,
+            );
+        }
+        lines.push(
+            bad > 0
+                ? `[PlaneHuntLayout] ⚠️ 有 ${bad} 架格数不等于基准 —— 形态矩阵或放置逻辑有问题`
+                : `[PlaneHuntLayout] ✅ 全部 ${heads.length} 架格数正常`,
+        );
+
+        console.log(lines.join('\n'));
     }
 
     /**
