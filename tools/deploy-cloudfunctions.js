@@ -133,10 +133,23 @@ if (!verifyOnly) {
         process.stdout.write(`▶ ${n} ... `);
         try {
             const out = runCli(deployArgs([n]));
-            // 判定标准：输出里出现这一行才算成功；只看退出码会被 CLI 的
-            // 「✖ 部署云函数 / 以 0 退出」组合骗过。
-            if (/上传云函数 .* - 部署/.test(out) && /✔ (\[.*\] )?部署云函数/.test(out)) {
-                console.log('成功');
+            // 判定标准：结果表格里该函数的 success 为 true。
+            //
+            // ⚠️ 这里踩过三次坑，别改回「看某两行日志同时出现」：
+            //   ① 只看**退出码**不行 —— CLI 在「✖ 部署云函数」时仍以 0 退出；
+            //   ② 只匹配日志行也不行 —— 逐个部署时「✔ [fn] 上传…」与
+            //      「✔ 部署云函数」（批量汇总行）并非总是同时出现；
+            //   ③ 匹配表格时**不能只认 ASCII 竖线 `|`** —— CLI 画的是
+            //      `│`（U+2502）制表符，用 `|` 永远匹配不到，会把成功报成失败。
+            // 现在的做法：找 `<函数名> │ true │` 这一行（允许空格）。
+            // 函数名先做正则转义，避免将来出现含特殊字符的名字时正则失效。
+            const esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const successRow = new RegExp(`${esc}\\s*│\\s*true\\s*│`).test(out)
+                || new RegExp(`${esc}\\s*\\|\\s*true\\s*\\|`).test(out);
+            const failRow = new RegExp(`${esc}\\s*[│|]\\s*false`).test(out);
+            if (successRow && !failRow) {
+                const size = (out.match(/'([\d.]+ KB)'/) || [])[1] || '?';
+                console.log(`成功（${size}）`);
             } else {
                 failed++;
                 console.log('失败');
