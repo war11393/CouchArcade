@@ -10,6 +10,8 @@
     "noImplicitAny": true,
     "noImplicitThis": true,
     "alwaysStrict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "useDefineForClassFields": false,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": false,

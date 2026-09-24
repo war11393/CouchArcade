@@ -24,7 +24,6 @@ import {
 } from '../IServices';
 import { Cmd, makeEnvelope } from '../../../core/protocol/Protocol';
 import { MockCloudService } from './MockCloudService';
-import { MockNetSyncService } from './MockNetSyncService';
 
 export class MockRoomService implements IRoomService {
     private readonly _auth: IAuthService;

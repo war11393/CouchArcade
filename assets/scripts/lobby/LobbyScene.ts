@@ -26,7 +26,7 @@
  *        └─ Camera                   [cc.Camera]
  */
 
-import { _decorator, Component, Label, Node, UITransform } from 'cc';
+import { _decorator, Component, Label, UITransform } from 'cc';
 import { AppConfig } from '../config/AppConfig';
 import { GameMeta, getSortedGameList } from '../config/GameList';
 import { services, ensureServices } from '../core/ServiceLocator';

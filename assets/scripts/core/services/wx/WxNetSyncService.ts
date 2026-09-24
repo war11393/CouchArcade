@@ -16,7 +16,7 @@
  */
 
 import { COLLECTIONS } from '../../../config/Collections';
-import { CloudError, ERR } from '../../../config/CloudErrors';
+import { ERR } from '../../../config/CloudErrors';
 import { GameId } from '../../../config/GameList';
 import { Cmd, makeEnvelope } from '../../protocol/Protocol';
 import { INetSyncService, NetMessage, NetMessageHandler, NetStatus } from '../IServices';

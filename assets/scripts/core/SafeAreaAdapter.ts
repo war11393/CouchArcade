@@ -16,7 +16,7 @@
  * - 纵向在刘海屏上会超出可视区，因此顶部/底部内容需要按 safeArea 内缩。
  */
 
-import { _decorator, Component, Node, UITransform, view, screen, Widget } from 'cc';
+import { _decorator, Component, Node, UITransform, view, Widget } from 'cc';
 import { AppConfig } from '../config/AppConfig';
 import { services, ensureServices } from './ServiceLocator';
 import { GameEvent, SafeAreaPayload, eventBus } from './EventBus';
@@ -231,7 +231,4 @@ export class SafeAreaAdapter extends Component {
     public getSafeWidth(): number {
         return view.getVisibleSize().width - this._left - this._right;
     }
-
-    /** 未使用引用占位（保持 screen 导入可用）。 */
-    private static readonly _screenRef = typeof screen;
 }

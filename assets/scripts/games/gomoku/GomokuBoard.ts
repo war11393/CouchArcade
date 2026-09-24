@@ -14,7 +14,6 @@ import {
     Component,
     EventTouch,
     Graphics,
-    Label,
     Node,
     Sprite,
     tween,
@@ -56,7 +55,7 @@ class GomokuBoardRenderer extends BoardBase {
         if (!g) {
             return;
         }
-        const { cellSize, boardWidth } = this._layout;
+        const { cellSize } = this._layout;
         if (cellSize <= 0) {
             return;
         }
@@ -107,8 +106,6 @@ export class GomokuBoard extends Component {
     private readonly _stoneNodes = new Map<number, Node>();
     /** 规则引用（只读渲染用）。 */
     private _rules: GomokuRules | null = null;
-    /** 本机 playerId。 */
-    private _myPlayerId = '';
     /** 最后一手标记节点。 */
     private _lastMark: Node | null = null;
 
@@ -168,10 +165,15 @@ export class GomokuBoard extends Component {
 
     // ==================== 对外 API ====================
 
-    /** 初始化棋盘（注入规则）。 */
-    public setup(rules: GomokuRules, myPlayerId: string): void {
+    /**
+     * 初始化棋盘（注入规则）。
+     *
+     * ⚠️ `myPlayerId` 参数保留但不再存字段（2026-09-24 清理）：它原先只在
+     * 这里被赋值、从未被读取（棋子颜色由 `_rules.stoneOf()` 提供，
+     * 回合由 Game 层判定）。留字段容易让后来者以为棋盘在自行判定"我是谁"。
+     */
+    public setup(rules: GomokuRules, _myPlayerId: string): void {
         this._rules = rules;
-        this._myPlayerId = myPlayerId;
         this._renderer.recalculateLayout();
     }
 

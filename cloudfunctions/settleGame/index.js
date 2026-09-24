@@ -30,6 +30,32 @@ exports.main = wrap('settleGame', async function (ctx, event) {
     const room = await requireRoom(ctx, roomId);
     const now = Date.now();
 
+    // 0) 幂等闸：本房间已结算过就直接返回，**绝不重复写战绩**。
+    //
+    // 为什么必须有（2026-09-24 实测确证的数据错误）：
+    //   客户端有两条路径都会调本函数 ——
+    //     ① 投降：surrender() 发 GAME_SURRENDER，WxNetSyncService 把它映射到
+    //        settleGame（result.reason='surrender'）；
+    //     ② 结算展示时 saveMatchRecord() **再调一次** settleGame。
+    //   原实现每次调用都无条件 add() 战绩 + bumpUserStats()，
+    //   于是**投降一次 = 两条战绩 + 胜场加两次**。
+    //   实测：同一房间连调两次 → match_records 4 条（应为 2）、winCount=2（应为 1）。
+    //
+    // 判定依据用 `finishedAt`：它在下面第 3 步与本闸同一函数内写入，
+    // 因此「有 finishedAt」等价于「本房间已走过完整结算」。
+    if (room.status === ROOM_STATUS.FINISHED && room.finishedAt) {
+        console.log(
+            `[settleGame] room=${roomId} 已结算过（finishedAt=${room.finishedAt}），` +
+                '幂等返回既有结果',
+        );
+        return ok({
+            winnerId: room.winnerId || '',
+            draw: !!room.draw,
+            records: [],
+            judgmentSource: 'idempotent_skip',
+        });
+    }
+
     // 1) 尝试从服务端权威对局文档重新判定结果
     let judgment = null;
     const gameColName =

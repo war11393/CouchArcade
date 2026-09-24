@@ -149,7 +149,7 @@
 | 2.19 | 故意露出破绽 | AI 能抓住机会成五 | [ ] |
 | 2.20 | 整体体感 | 需要认真下才能赢，但不至于必败 | [ ] |
 
-> 上述 AI 行为已由 `node tools/test-core.js` 自动化验证（40 项全通过）。
+> 上述 AI 行为已由 `node tools/test-core.js` 自动化验证（52 项全通过）。
 
 ---
 
@@ -272,7 +272,7 @@
 cd C:\Users\war11\wechat_game
 .\typecheck.cmd
 
-# 核心算法自测（40 项）
+# 核心算法自测（52 项）
 node tools/test-core.js
 
 # 场景回归校验（格式 + 内容存在性 + 设计令牌合规 + 路径契约）
@@ -290,7 +290,7 @@ Get-ChildItem cloudfunctions -Recurse -Filter *.js | ForEach-Object { node --che
 | 检查项 | 结果 |
 | :--- | :--- |
 | `typecheck.cmd` | ✅ `TYPECHECK_EXIT=0`（严格模式，零错误） |
-| `tools/test-core.js` | ✅ **40 通过 / 0 失败** |
+| `tools/test-core.js` | ✅ **52 通过 / 0 失败** |
 | `tools/validate-scenes.js` | ✅ `ALL_SCENE_VALIDATIONS_PASSED`（4 场景，含路径契约 60+ 条） |
 | 云函数语法检查 | ✅ 全部通过（9 个函数 + 公共模块） |
 

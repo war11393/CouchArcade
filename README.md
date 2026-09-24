@@ -66,8 +66,8 @@ cd C:\Users\war11\wechat_game
 # TypeScript 严格模式类型检查
 .\typecheck.cmd                      # 期望 TYPECHECK_EXIT=0
 
-# 核心算法自测（40 项：规则 + AI + 布局生成）
-node tools/test-core.js              # 期望 40 通过 / 0 失败
+# 核心算法自测（52 项：规则 + AI + 布局生成）
+node tools/test-core.js              # 期望 52 通过 / 0 失败
 
 # 云函数语法检查
 Get-ChildItem cloudfunctions -Recurse -Filter *.js | ForEach-Object { node --check $_.FullName }
@@ -186,7 +186,7 @@ wechat_game/
 ├── tools/                             # 开发辅助脚本（不参与游戏运行）
 │   ├── gen-scenes.js                  # 生成 4 个场景文件
 │   ├── gen-cloudfunctions.js          # 生成云函数 package.json + common.js
-│   └── test-core.js                   # 核心算法自测（40 项）
+│   └── test-core.js                   # 核心算法自测（52 项）
 ├── typecheck.cmd                      # TypeScript 严格模式校验入口
 ├── tsconfig.check.json                # 严格模式校验配置
 └── settings/v2/packages/              # Cocos 项目设置
@@ -335,7 +335,7 @@ wechat_game/
 | 检查项 | 命令 | 结果 |
 | :--- | :--- | :--- |
 | TypeScript 严格模式 | `.\typecheck.cmd` | ✅ `TYPECHECK_EXIT=0`（基于真实引擎声明） |
-| 核心算法自测 | `node tools/test-core.js` | ✅ **40 通过 / 0 失败** |
+| 核心算法自测 | `node tools/test-core.js` | ✅ **52 通过 / 0 失败** |
 | 场景结构与内容校验 | `node tools/validate-scenes.js` | ✅ `ALL_SCENE_VALIDATIONS_PASSED` |
 | 云函数语法 | `node --check` | ✅ 全部通过（9 函数 + 公共模块） |
 

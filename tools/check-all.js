@@ -23,6 +23,8 @@
  *  12. 云函数 common.js / server-ai.js 副本一致性
  *  13. test-channel-lifecycle（通道生命周期：离开场景必须停 watch、看门狗可证伪）
  *  14. test-ai-fullgame（云函数 AI 整局对拉：不会中途卡在 AI 回合并停不下来）
+ *  15. test-settle-idempotent（结算幂等：投降双路径不会重复写战绩 / 累加胜负）
+ *  16. test-planehunt-turn（寻机头回合规则：云函数与客户端一致「一律换手」）
  */
 
 const { execFileSync } = require('child_process');
@@ -53,7 +55,9 @@ const steps = [
     { name: 'test-core（游戏核心算法）', run: () => node('test-core.js') },
     { name: 'test-auth-fallback（登录兜底）', run: () => node('test-auth-fallback.js') },
     { name: 'test-cloud-envelope（云函数信封）', run: () => node('test-cloud-envelope.js') },
+    { name: 'test-settle-idempotent（结算幂等：战绩不重复累加）', run: () => node('test-settle-idempotent.js') },
     { name: 'test-cloud-ai-seat（AI 练习开局）', run: () => node('test-cloud-ai-seat.js') },
+    { name: 'test-planehunt-turn（寻机头回合规则一致）', run: () => node('test-planehunt-turn.js') },
     { name: 'test-server-ai（服务端 AI 与客户端等价）', run: () => node('test-server-ai.js') },
     { name: 'test-gomoku-ai-e2e（云函数 AI 回手端到端）', run: () => node('test-gomoku-ai-e2e.js') },
     { name: 'test-result-dialog（结算弹窗无蒙版）', run: () => node('test-result-dialog.js') },

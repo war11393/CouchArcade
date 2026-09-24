@@ -5,7 +5,6 @@
  * 在第一阶段就能跑通完整代码路径，第二阶段切换 WxCloudService 即可。
  */
 
-import { AppConfig } from '../../../config/AppConfig';
 import { ICloudService } from '../IServices';
 
 interface MockDoc {
@@ -207,7 +206,4 @@ export class MockCloudService implements ICloudService {
     public static hasHandler(name: string): boolean {
         return MockCloudService._handlers.has(name);
     }
-
-    /** 静态日志开关引用，避免 AppConfig 被 tree-shake 误删。 */
-    private static readonly _verbose = AppConfig.LOG_VERBOSE;
 }

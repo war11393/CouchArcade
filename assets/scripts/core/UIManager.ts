@@ -14,7 +14,6 @@
 import {
     BlockInputEvents,
     Camera,
-    Component,
     director,
     Label,
     Layers,
@@ -40,13 +39,10 @@ import {
     createCard,
     createLabel,
     createRect,
-    makeFullScreen,
     newUINode,
 } from './UIFactory';
 import { FONT, RADIUS, overlayColor } from '../config/UITheme';
 import { services } from './ServiceLocator';
-
-const { ccclass } = _decorator;
 
 /** 场景名常量（与 assets/scenes/ 下的场景文件一一对应）。 */
 export const SCENES = {

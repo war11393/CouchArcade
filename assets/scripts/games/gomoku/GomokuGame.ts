@@ -30,8 +30,6 @@ export class GomokuAuthority implements IMockAuthority {
     private readonly _rules: GomokuRules;
     private readonly _ai: GomokuAi | null;
     private readonly _aiPlayerId: string;
-    private readonly _opponentId: string;
-    private _reqSeq = 0;
     /** 记录已处理请求序号，保证幂等（重连补发不会重复落子）。 */
     private readonly _handled = new Set<number>();
     /** AI 是否正在思考（防止并发多次触发）。 */
@@ -44,7 +42,6 @@ export class GomokuAuthority implements IMockAuthority {
         level: AiLevel,
     ) {
         this._rules = new GomokuRules(firstPlayerId, secondPlayerId);
-        this._opponentId = aiPlayerId === firstPlayerId ? secondPlayerId : firstPlayerId;
         this._aiPlayerId = aiPlayerId;
         this._ai = aiPlayerId ? new GomokuAi(aiPlayerId, firstPlayerId, level) : null;
     }

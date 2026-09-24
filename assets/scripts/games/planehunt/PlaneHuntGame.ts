@@ -216,6 +216,22 @@ export class PlaneHuntGame implements IGame {
      */
     private _serverTurnId = '';
 
+    /** 我点了、正在等权威判定的那一格（null = 没有）。 */
+    private _pending: { row: number; col: number } | null = null;
+    /** 上一次上行的时刻（用于 AI 一手的「最小思考感」）。 */
+    private _sentAt = 0;
+    /** 对手一手延迟应用的定时器（卸载时必须清）。 */
+    private _aiHoldTimer: ReturnType<typeof setTimeout> | null = null;
+
+    /**
+     * 对手一手的展示延迟下限（毫秒）。
+     *
+     * 与五子棋 `GomokuGame.AI_MIN_THINK_MS` 同一个理由：服务端把人类与 AI
+     * 两手背靠背写库，两帧 watch 只差几百毫秒，不补间隔会「两颗子同时蹦出来」。
+     * 寻机头同样存在（人类翻一格 → AI 立刻回翻一格）。
+     */
+    private static readonly AI_MIN_THINK_MS = 650;
+
     constructor(ctx: GameContext) {
         this._ctx = ctx;
     }
@@ -268,6 +284,19 @@ export class PlaneHuntGame implements IGame {
                 // 布局元信息（第二阶段用于显示进度条上限）
                 break;
             }
+            case Cmd.SYS_ERROR: {
+                // 权威拒绝了我刚上行的翻格（如「还没轮到你翻格」）：
+                // 撤掉本地「判定中」的预反馈标记并放开输入，否则那一格会永远
+                // 显示成"等待判定"，且棋盘一直不可点 —— 玩家以为卡死了。
+                // ⚠️ cmd 取值两端不同：Mock 裁判填协议名（ph.flip），
+                //    真机 WxNetSync 填**云函数名**（planehunt_flip）—— 两个都认。
+                const e = msg.payload as { cmd?: string; message?: string };
+                const mine = e && (e.cmd === Cmd.PH_FLIP || e.cmd === 'planehunt_flip');
+                if (mine && this._pending) {
+                    this._rollbackPending();
+                }
+                break;
+            }
             case Cmd.GAME_OVER: {
                 const p = msg.payload as {
                     winnerId: string;
@@ -289,6 +318,10 @@ export class PlaneHuntGame implements IGame {
     }
 
     public onExit(): void {
+        if (this._aiHoldTimer) {
+            clearTimeout(this._aiHoldTimer);
+            this._aiHoldTimer = null;
+        }
         if (this._unsub) {
             this._unsub();
             this._unsub = null;
@@ -324,7 +357,14 @@ export class PlaneHuntGame implements IGame {
      * 玩家点击格子（由 PlaneHuntBoard 回调）。
      *
      * 双模式统一走协议：只发送翻格请求，翻格结果完全由权威方下发。
-     * 这保证了客户端无法通过改内存作弊（与第二阶段云函数模型一致）。
+     * 这保证了客户端无法通过改内存作弊（与第二阶段云函数规范一致）。
+     *
+     * ⚠️ 与五子棋的「预落子」不同（2026-09-24 一致性修复）：
+     *   寻机头的翻格结果**客户端不可预知**（布局在服务端），所以不能乐观渲染
+     *   "翻出了什么"。但手感诉求一样：点下去必须立刻有反应。这里给的等价反馈是
+     *   ——立刻在该格放一个「判定中」标记 + 禁用棋盘输入，等权威结果到达后
+     *   `_applyFlipResult` 再用正式标记覆盖。这样玩家点完立刻看到反馈，
+     *   而不是盯着没反应的棋盘等一个网络往返。
      */
     public onPlayerClick(row: number, col: number): void {
         if (this._finished || !this._rules) {
@@ -344,6 +384,13 @@ export class PlaneHuntGame implements IGame {
         }
 
         this._reqSeq++;
+        this._sentAt = Date.now();
+        this._pending = { row, col };
+        // 立即反馈 + 锁输入（防止等待期连点发出一串请求）
+        if (this._board) {
+            this._board.setPendingCell(row, col);
+            this._board.setInputEnabled(false);
+        }
         net.send(Cmd.PH_FLIP, { row, col, reqSeq: this._reqSeq });
     }
 
@@ -366,7 +413,44 @@ export class PlaneHuntGame implements IGame {
         if (!this._rules) {
             return;
         }
+
+        // 我预反馈的那一格：权威结果到了 → 撤掉「判定中」标记。
+        // 必须在幂等短路**之前**清 —— 否则重连重放同一格时标记会永远留着。
+        const isMyPending = this._pending
+            && this._pending.row === p.row && this._pending.col === p.col;
+        if (isMyPending) {
+            this._pending = null;
+            this._board?.clearPendingCell();
+        }
+
         // 幂等：已揭示的格子跳过（重连全量补偿时会重复下发）
+        if (this._rules.isRevealed(p.row, p.col)) {
+            return;
+        }
+
+        // 对手（AI）的一手：补足最小展示间隔再应用 —— 与五子棋同款手感修正。
+        // 计时起点是我方上行的时刻；AI 真实耗时若已超过下限则不再额外拖。
+        const byMeNow = p.byPlayerId === this._ctx.myPlayerId;
+        const hold = Math.max(0, PlaneHuntGame.AI_MIN_THINK_MS - (Date.now() - this._sentAt));
+        if (!byMeNow && hold > 0) {
+            if (this._aiHoldTimer) {
+                clearTimeout(this._aiHoldTimer);
+            }
+            this._aiHoldTimer = setTimeout(() => {
+                this._aiHoldTimer = null;
+                this._commitFlip(p);
+            }, hold);
+            return;
+        }
+        this._commitFlip(p);
+    }
+
+    /** 应用一格翻格结果（延迟窗口结束后；见 _applyFlipResult 的注释）。 */
+    private _commitFlip(p: PhFlipResultPayload): void {
+        if (!this._rules || this._finished) {
+            return;
+        }
+        // 二次幂等：延迟期间可能已有别的帧把它翻了（重连重放）
         if (this._rules.isRevealed(p.row, p.col)) {
             return;
         }
@@ -411,6 +495,23 @@ export class PlaneHuntGame implements IGame {
     /** 机头总数（从房间配置推导，第一阶段固定 5）。 */
     private _headTotal(): number {
         return this._rules ? this._rules.totalHeads : 5;
+    }
+
+    /**
+     * 撤销本地「判定中」的预反馈（权威拒绝时）。
+     *
+     * 寻机头不像五子棋要回滚棋子（本来就没乐观落子），这里只需要：
+     *   ① 撤掉待判定标记；② 放开棋盘输入让玩家重试。
+     */
+    private _rollbackPending(): void {
+        if (!this._pending) {
+            return;
+        }
+        this._pending = null;
+        if (this._board) {
+            this._board.clearPendingCell();
+            this._board.setInputEnabled(!this._finished && this.isMyTurn());
+        }
     }
 
     private _finishGame(winnerId: string, draw: boolean, reason: GameResult['reason']): void {

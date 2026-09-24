@@ -18,6 +18,7 @@ import {
     Label,
     Node,
     tween,
+    UIOpacity,
     UITransform,
     Vec3,
     Color,
@@ -40,6 +41,14 @@ const COLOR_BODY = hexToColor(BOARD.huntBody);
 const COLOR_HEAD = hexToColor(BOARD.huntHead);
 /** 格子内符号色（机头/机身均为实色底 → 用白色符号保证对比）。 */
 const COLOR_MARK = hexToColor(BOARD.huntBg);
+
+/**
+ * 「待判定格」标记配色（本地预反馈，见 setPendingCell）。
+ * 用中性的琥珀色系，与结果标记（✈/●，用 COLOR_MARK）区分开 ——
+ * 玩家一眼能看出这是「我点了、还在等」而非最终结果。
+ */
+const COLOR_PENDING = new Color(255, 193, 7, 255);
+const COLOR_PENDING_EDGE = new Color(180, 130, 0, 255);
 
 /** 棋盘绘制子类。 */
 class PlaneHuntRenderer extends BoardBase {
@@ -120,6 +129,8 @@ export class PlaneHuntBoard extends Component {
     private _inputEnabled = true;
     private _gfxNode: Node | null = null;
     private _markLayer: Node | null = null;
+    /** 「待判定格」标记（本地预反馈，同一时刻至多一个）。 */
+    private _pendingMark: Node | null = null;
     private readonly _renderer = new PlaneHuntRenderer();
 
     /** 我方/对手得分与翻格数（HUD 读取）。 */
@@ -127,9 +138,6 @@ export class PlaneHuntBoard extends Component {
     private _oppScore = 0;
     private _myFlips = 0;
     private _oppFlips = 0;
-    private _myPlayerId = '';
-    private _firstPlayerId = '';
-    private _isMyTurn = false;
     /** 已找到的机头数 / 总数（HUD 读取，随权威下发更新）。 */
     private _headsFound = 0;
     private _headTotal = AppConfig.PLANEHUNT_PLANE_COUNT;
@@ -175,16 +183,70 @@ export class PlaneHuntBoard extends Component {
 
     // ==================== 对外 API ====================
 
-    /** 初始化。 */
-    public setup(myPlayerId: string, firstPlayerId: string): void {
-        this._myPlayerId = myPlayerId;
-        this._firstPlayerId = firstPlayerId;
+    /**
+     * 初始化棋盘。
+     *
+     * ⚠️ 参数保留但**不再存字段**（2026-09-24 清理）：原先存了
+     * `_myPlayerId` / `_firstPlayerId` / `_isMyTurn` 三个字段，但它们只在
+     * 这里被赋值、从未被读取 —— 回合归属现在统一由 `setTurn()` 每次下发时
+     * 直接写 UI，不再需要棋盘自己记"我是谁"。留着容易让后来者以为
+     * 棋盘在自行判定回合（本项目历史上就因"用回合反推翻格者"导致得分错位）。
+     */
+    public setup(_myPlayerId: string, _firstPlayerId: string): void {
+        // 故意留空：参数保留是为了不动调用点（GameScene 传的是座位信息，
+        // 将来若要在棋盘上显示"我方/对手"标识可直接启用）。
     }
 
     /** 绘制空棋盘（对局开始）。 */
     public renderGrid(): void {
         this._renderer.clearRevealed();
         this._renderer.recalculateLayout();
+    }
+
+    /**
+     * 标记「待判定格」（本地预反馈，见 PlaneHuntGame 的乐观反馈说明）。
+     *
+     * 寻机头与五子棋不同：客户端**不知道布局**，无法预先知道翻出来是机身还是机头，
+     * 所以不能像五子棋那样"预落一颗子"。但手感诉求是一样的 —— 点下去要立刻有反应。
+     * 这里给的反馈是：该格显示一个「判定中」的淡色标记，权威结果到达后由
+     * `revealCell` 覆盖成正式标记。
+     *
+     * 幂等：重复标记会先清掉旧的（同一时刻至多一个 —— 由 PlaneHuntGame 保证）。
+     */
+    public setPendingCell(row: number, col: number): void {
+        this.clearPendingCell();
+
+        const layout = this._renderer.getLayout();
+        const node = newUINode(`pending_${row}_${col}`);
+        this._markLayer?.addChild(node);
+        node.setPosition(this._renderer.cellToLocal(row, col));
+        node.addComponent(UITransform).setContentSize(layout.cellSize, layout.cellSize);
+
+        const g = node.addComponent(Graphics);
+        // 淡色圆点 + 细描边：明确是「我点了这一格，正在等判定」，
+        // 而不是结果（结果由 revealCell 用 ✈/● 表达）。
+        g.fillColor = COLOR_PENDING;
+        g.circle(0, 0, Math.max(4, Math.floor(layout.cellSize * 0.18)));
+        g.fill();
+        g.lineWidth = Math.max(1, Math.floor(layout.cellSize * 0.06));
+        g.strokeColor = COLOR_PENDING_EDGE;
+        g.circle(0, 0, Math.max(4, Math.floor(layout.cellSize * 0.18)));
+        g.stroke();
+
+        // 呼吸感：让"等待判定"看起来是活的，不是画错了一个点
+        const op = node.addComponent(UIOpacity);
+        op.opacity = 200;
+        tween(op).to(0.45, { opacity: 90 }).to(0.45, { opacity: 200 }).union().repeatForever().start();
+
+        this._pendingMark = node;
+    }
+
+    /** 清除「待判定格」标记（权威结果到达 / 请求被拒时调用；无标记也安全）。 */
+    public clearPendingCell(): void {
+        if (this._pendingMark) {
+            this._pendingMark.destroy();
+            this._pendingMark = null;
+        }
     }
 
     /**
@@ -243,7 +305,6 @@ export class PlaneHuntBoard extends Component {
 
     /** 更新回合状态与进度（由 Game 驱动）。 */
     public setTurn(isMyTurn: boolean, headsFound: number, headTotal: number): void {
-        this._isMyTurn = isMyTurn;
         this._headsFound = headsFound;
         this._headTotal = headTotal;
         this.setInputEnabled(isMyTurn);

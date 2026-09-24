@@ -103,10 +103,21 @@ exports.main = wrap('planehunt_flip', async function (ctx, event) {
     // 这三个会被 AI 回手改写，故用 let（const 会在回手时报
     // "Assignment to constant variable" —— gomoku_move 上被仿真抓到过同一坑）
     let finished = headsFound >= (game.heads || []).length;
-    // 翻中机头奖励额外一次（连续奖励）；否则切换回合
-    const extraTurn = scored && !finished;
+
+    // 回合交接：**一律换手**（翻到机头也换），对局未结束才换。
+    //
+    // ⚠️ 规则漂移修正（2026-09-24，实测确证）：
+    //   这里原先是 `const extraTurn = scored && !finished;` —— 即「翻中机头
+    //   奖励额外一次」的旧规则。而客户端 `PlaneHuntRules.ts:249` 早已改成
+    //   「翻到机头也换手」（`extraTurn` 字段保留但恒为 false，仅存档兼容）。
+    //   两端不一致的后果（真机实测）：人类翻中机头后服务端把 nextPlayerId
+    //   留给自己，客户端按「一定换手」理解 → isMyTurn() 判定错位 →
+    //   点格子没有任何反应（与五子棋 gameId 那个 bug 同款症状）。
+    //   `extraTurn` 仍在返回体里**恒为 false**，保持消息结构不变。
+    // （对局结束时回合归属已无意义，故保留在最后一手方。）
+    const extraTurn = false;
     let nextPlayerId = game.currentPlayerId;
-    if (!extraTurn && !finished) {
+    if (!finished) {
         nextPlayerId = otherPlayer(room, ctx.openid);
     }
 
@@ -205,7 +216,17 @@ exports.main = wrap('planehunt_flip', async function (ctx, event) {
         score: scores[ctx.openid],
         nextPlayerId: nextPlayerId,
         planeIndex: planeIndex,
-        /** AI 回手序列（可能多格：AI 翻中机头会连翻） */
+        // ⚠️ 对局结束标志必须回传（2026-09-24 补）：
+        //   原先返回体到 aiFlips 就结束了，**没有 finished / winnerId** ——
+        //   文档里写对了，但客户端拿不到「这局结束了」的信号。
+        //   对照五子棋的 gomoku_move：它一直有 win/draw/nextPlayerId。
+        //   缺它的后果：AI 回手直接终结对局时（AI 翻中最后一个机头），
+        //   客户端只能靠后续 watch 帧的 game.over 才反应过来，
+        //   期间停在「等待对手」，表现与卡住无异。
+        finished: finished,
+        winnerId: winnerId,
+        draw: draw,
+        /** AI 回手序列（改为「一手即交回」后至多一格，保留数组结构兼容客户端） */
         aiFlips: aiFlips.map(function (f) {
             return {
                 row: f.row,
@@ -219,7 +240,11 @@ exports.main = wrap('planehunt_flip', async function (ctx, event) {
 });
 
 /**
- * 让 AI 连续翻格直到该轮结束（回合交回人类或对局结束），并写库。
+ * 让 AI 翻一格（若轮到 AI 且未结束），并写库。
+ *
+ * ⚠️ 2026-09-24 起规则改为「一律换手」：AI 翻一手即交回人类，
+ *    不再有「翻中机头连翻」。函数名保留（调用点不动），
+ *    实现内的循环也保留（防御性 + 将来若复用规则时无需重写）。
  *
  * @returns 本次 AI 的翻格序列（每次含落库后的权威状态）
  */
@@ -276,14 +301,16 @@ async function runAiFlips(ctx, st) {
         }
 
         finished = headsFound >= (st.game.heads || []).length;
-        // 翻中机头 → AI 继续翻（与人类规则一致）；否则回合交给人类
-        const aiExtraTurn = scored && !finished;
+
+        // 回合交接：与人类那一手同规则 —— **一律换手**，不再「翻中机头连翻」。
+        // （同 `extraTurn` 的修正：旧规则会让 AI 翻中机头后继续翻，
+        //   人类要多等一轮；且与客户端「翻到机头也换手」的规则不合。）
         if (finished) {
             const result = judge(st.scores);
             winnerId = result.winnerId;
             draw = result.draw;
         }
-        currentPlayerId = aiExtraTurn || finished ? seat.playerId : st.room.seats[0].playerId;
+        currentPlayerId = finished ? seat.playerId : st.room.seats[0].playerId;
 
         out.push({
             row: decision.row,
@@ -299,9 +326,8 @@ async function runAiFlips(ctx, st) {
             draw: draw,
         });
 
-        if (!aiExtraTurn) {
-            break; // 回合已交给人类（或已结束）
-        }
+        // AI 一手即结束本回合：交回人类（或对局已结束）
+        break;
     }
 
     if (out.length === 0) {

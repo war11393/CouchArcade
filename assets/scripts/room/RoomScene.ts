@@ -46,7 +46,7 @@ import { RoomState, RoomStatus, SeatInfo } from '../core/services/IServices';
 import { services, ensureServices } from '../core/ServiceLocator';
 import { GameEvent, eventBus } from '../core/EventBus';
 import { GameSceneParams, RoomSceneParams, uiManager } from '../core/UIManager';
-import { THEME, bindClick, findNode, setLabelText, hexToColor } from '../core/UIFactory';
+import { THEME, bindClick, findNode, setLabelText } from '../core/UIFactory';
 import { portraitAdapter } from '../core/PortraitAdapter';
 
 const { ccclass } = _decorator;
@@ -460,15 +460,6 @@ export class RoomScene extends Component {
         uiManager.gotoLobby();
     }
 
-    /** 分享房间（经 IShareService，Mock 阶段打印日志）。 */
-    private _onShare(): void {
-        const params = this._params!;
-        const meta = requireGameMeta(params.gameId);
-        const roomId = services.room.getCurrentRoomId() ?? params.joinRoomId ?? '';
-        services.share.shareRoom({ roomId, gameId: params.gameId, gameName: meta.name });
-        uiManager.toast('已唤起分享（Mock 模式仅打印日志）', undefined);
-    }
-
     /** 设置右上角被动转发内容。 */
     private _setupShare(): void {
         const params = this._params!;
@@ -485,7 +476,4 @@ export class RoomScene extends Component {
     public getSeatCount(): number {
         return this._seatNodes.length;
     }
-
-    /** 保持 hexToColor 导入可用（主题色扩展时使用）。 */
-    private static readonly _refs = { h: hexToColor };
 }

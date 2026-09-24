@@ -9,13 +9,13 @@
  * 双模式：pvp / ai 共用本场景，仅上下文不同。
  */
 
-import { _decorator, Component, Label, Layers, Node, UITransform, Vec3, view } from 'cc';
-import { AiLevel, AppConfig } from '../config/AppConfig';
-import { GameId, requireGameMeta } from '../config/GameList';
+import { _decorator, Component, Label, Layers, Node, UITransform } from 'cc';
+import { AppConfig } from '../config/AppConfig';
+import { GameId } from '../config/GameList';
 import { RoomState, SeatInfo } from '../core/services/IServices';
 import { services, ensureServices } from '../core/ServiceLocator';
-import { Cmd, EMOTES } from '../core/protocol/Protocol';
-import { UiManagerRefStub, uiManager } from '../core/UIManager';
+import { EMOTES } from '../core/protocol/Protocol';
+import { uiManager } from '../core/UIManager';
 import {
     THEME,
     bindClick,

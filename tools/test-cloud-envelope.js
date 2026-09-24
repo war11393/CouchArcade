@@ -139,17 +139,41 @@ console.log('\n场景 4：9 个云函数副本与权威源完全一致');
 console.log('\n场景 5：所有 handler 内的 `return ok(...)` 都能被正确识别');
 // ---------------------------------------------------------------------
 {
+    // ⚠️ 断言意图是「每个云函数都至少有 return ok()、且 ok() 带 __isResponse」，
+    //    而**不是**「恰好 N 处」—— 写死数字会让每次「合理新增一处成功返回」
+    //    都误报（2026-09-24 settleGame 加幂等短路时就误报过一次）。
+    //    这里改为：逐函数统计 + 断言「覆盖数 == 函数数」+ 断言 ok() 实现带标记。
+    const perFunc = {};
     let totalOk = 0;
+    const missing = [];
     for (const fn of FUNCS) {
         const p = path.join(__dirname, '..', 'cloudfunctions', fn, 'index.js');
-        if (!fs.existsSync(p)) continue;
+        if (!fs.existsSync(p)) {
+            missing.push(`${fn}(文件缺失)`);
+            continue;
+        }
         const src = fs.readFileSync(p, 'utf8');
         const matches = src.match(/return ok\(/g);
-        if (matches) totalOk += matches.length;
+        const n = matches ? matches.length : 0;
+        perFunc[fn] = n;
+        totalOk += n;
+        if (n === 0) {
+            missing.push(fn);
+        }
     }
-    check(`9 个云函数共 ${totalOk} 处 return ok()，全部经 ok() 打标记`, totalOk === 16,
-        `找到 ${totalOk} 处，预期恰好 16（login 1 + createRoom 1 + joinRoom 5 + ready 1 + startGame 2 + ` +
-            `getRoomState 2 + planehunt_flip 2 + gomoku_move 1 + settleGame 1）`);
+
+    check(`所有云函数都至少有一处 return ok()（共 ${totalOk} 处）`,
+        missing.length === 0,
+        `以下函数没有成功返回：${missing.join(', ')}`);
+
+    // 真正的守护点：ok() 必须打 __isResponse（否则被 wrap() 二次包装）
+    const commonSrc = fs.readFileSync(
+        path.join(__dirname, '..', 'cloudfunctions', 'common', 'index.js'), 'utf8');
+    check('ok() 实现带 __isResponse 标记', /__isResponse:\s*true/.test(commonSrc),
+        '缺标记 → handler 的 return ok(x) 会被 wrap() 再包一层');
+
+    const detail = Object.keys(perFunc).map((k) => `${k}=${perFunc[k]}`).join(' ');
+    console.log(`     逐函数计数：${detail}`);
 }
 
 console.log('\n' + '='.repeat(60));

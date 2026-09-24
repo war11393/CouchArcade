@@ -115,6 +115,11 @@ export class LoadingScene extends Component {
     private _bindNodes(): void {
         this._barFill = findNode(this.node, 'Canvas/ProgressBarBg/ProgressBarFill');
 
+        // ⚠️ 必须绑定重试交互（2026-09-24 修复：此前 _bindRetry 定义了却从未调用，
+        //    等于「登录失败时没有任何手动重试入口」——玩家若卡在加载页只能杀进程）。
+        //    绑定本身是幂等的：hint 节点的 TOUCH_END 只注册一次。
+        this._bindRetry();
+
         // 记录填充条满宽，便于按进度缩放
         if (this._barFill) {
             const t = this._barFill.getComponent(UITransform);
