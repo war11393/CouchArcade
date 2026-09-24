@@ -430,12 +430,16 @@ export class GameScene extends Component {
     }
 
     /**
-     * 渲染「当前是谁的回合」。
+     * 渲染「当前是谁的回合」——**回合状态唯一的视觉表达**。
      *
-     * 三处同时表达，避免只靠一行文字（手机上容易看漏）：
+     * 2026-09-24 起棋盘上不再有任何遮罩/「对手思考中」文案（用户要求）：
+     *   回合归属统一由本方法表达，棋盘只负责落子与挡误触。
+     *
+     * 四处同时表达，避免只靠一行文字（手机上容易看漏）：
      *   1. Hud/TurnLabel 文案 + 颜色（我的回合=绿，对手=橙）
      *   2. ◆ 高亮圆点只出现在当前回合方那一栏
-     *   3. 当前回合方的**昵称**加粗提色（另一侧压暗）
+     *   3. 当前回合方的**昵称**提色（另一侧压暗）
+     *   4. 文案带「请落子 / 请稍候」，把"能不能点棋盘"直接说清楚
      *
      * @returns 状态是否发生变化（用于决定要不要重置倒计时）
      */
@@ -443,7 +447,7 @@ export class GameScene extends Component {
         let changed = false;
 
         if (this._turnLabel) {
-            const text = myTurn ? '● 你的回合' : '● 对手回合';
+            const text = myTurn ? '● 你的回合 · 请落子' : '● 对手回合 · 请稍候';
             const color = myTurn ? THEME.success : THEME.warn;
             if (this._turnLabel.string !== text) {
                 changed = true;
@@ -506,7 +510,10 @@ export class GameScene extends Component {
         }
 
         // 结束检测 → 结算
-        if (this._game.isFinished()) {
+        // 入口处 `_savedRecord` 已是幂等闸：结算过一次就不再进入（弹窗不会重复弹、
+        // 战绩不会重复写）。之前「再来一局」的重复弹窗不是这里漏判，而是
+        // **场景没重载**导致旧组件继续 update —— 见 _restartGame 的说明。
+        if (this._game.isFinished() && !this._savedRecord) {
             const result = this._game.getResult();
             if (result) {
                 this._showResult(result);
@@ -576,20 +583,39 @@ export class GameScene extends Component {
         });
     }
 
-    /** 再来一局（AI 直接重开；联机回房间）。 */
+    /**
+     * 再来一局。
+     *
+     * ⚠️ 必须**重新加载 Game 场景**，不能"复用当前场景"（2026-09-24 真机 bug）：
+     *   原实现调 `uiManager.gotoGame({...})`，而 `_load` 里有一道幂等闸
+     *   「已在目标场景就跳过」——于是场景根本没重载，只是 `_savedRecord`
+     *   被重置回 false。后果连锁三连：
+     *     ① 旧对局的 `_game/_rules/棋盘` 原样留着（has 已结束状态）；
+     *     ② `update()` 每帧继续 `_hudTick()` → 又走一次 `_showResult`
+     *        （日志里「结算弹窗已显示: 胜利」出现两次）；
+     *     ③ 用**旧对局**的数据再写一遍 `settleGame` → 云函数 3 秒超时
+     *        `-504003 Invoking task timed out`（日志里那条红字）。
+     *
+     * 所以这里显式 `director.loadScene(Game)` 强制重载：场景 onLoad 会
+     * 重新消费参数、重建棋盘与规则实例，`_savedRecord` 等字段随新组件归零。
+     * 旧组件的 onDestroy 会退房、停 watch（RoomScene 早已在进对局时停掉）。
+     *
+     * 房间复用：默认沿用当前房间（AI 练习重开最自然）。若房间已 finished，
+     * 服务端 `gomoku_move` 会以「对局已结束」拒绝 —— 这里保留原行为，
+     * 由 UIManager 层的直达建房子流程负责"真正开一局新的"。
+     */
     private _restartGame(): void {
-        console.log('[GameScene] 再来一局');
-        this._savedRecord = false;
+        console.log('[GameScene] 再来一局（强制重载 Game 场景）');
         uiManager.toast('正在重新开始…', undefined);
 
-        // 简化实现：重新加载 Game 场景（Mock 阶段房间仍在内存中）
-        // 第二阶段联机模式应回 Room 场景等待双方准备。
         const params = this._ctx;
         if (!params) {
             uiManager.gotoLobby();
             return;
         }
-        uiManager.gotoGame({
+        // 注意：不要在这里重置 _savedRecord —— 本组件马上就会被销毁，
+        // 新组件的字段天然是初始值；改了反而会误导后来的人。
+        uiManager.reloadGame({
             gameId: params.room.gameId,
             mode: params.mode,
             room: params.room,

@@ -284,16 +284,16 @@ export class PlaneHuntBoard extends Component {
     }
 
     /**
-     * 显示/隐藏「对手思考中」（与五子棋统一走 BoardBase 的共用遮罩）。
+     * 显示/隐藏「等待对手」的输入拦截（与五子棋统一走 BoardBase 的共用实现）。
      *
-     * 原先这里只打日志、**什么都不显示** —— 寻机头等待对手时界面毫无反馈，
-     * 玩家会以为点漏了。现在与五子棋一致：半透明蒙层 + 居中胶囊，
-     * 并禁用棋盘输入（防止等待期间误点发出越权请求）。
+     * 2026-09-24 起**界面上不再有蒙版与文案**：回合归属统一由 GameScene 的
+     * HUD（TurnLabel + ◆圆点 + 昵称提色）表达，棋盘上不压任何东西。
+     * 本方法现在只做两件事：拦误触（BlockInputEvents）+ 关棋盘输入。
      */
     public showThinking(show: boolean): void {
         this._renderer.showThinking(show);
         if (AppConfig.LOG_VERBOSE) {
-            console.log(`[PlaneHuntBoard] 对手思考中: ${show}`);
+            console.log(`[PlaneHuntBoard] 等待对手=${show}（仅拦输入，界面无提示）`);
         }
     }
 

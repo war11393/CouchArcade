@@ -203,6 +203,33 @@ console.log('\n场景 5：connect() 之前必须 setGameId（否则 watch 监听
         '说明断言可证伪');
 }
 
+// ---------------------------------------------------------------------
+console.log('\n场景 6：重开对局必须强制重载场景（不能复用当前 Game 场景）');
+{
+    // 为什么（2026-09-24 真机）：_restartGame 走 gotoGame → _load 的幂等闸
+    //   「已在目标场景就跳过」把重开吞掉了：场景没重载、旧对局控制器继续
+    //   update → 再次 _showResult（弹窗重复弹）+ 用旧数据再写一次战绩
+    //   （settleGame 云函数 3s 超时 -504003）。修复 = UIManager.reloadGame
+    //   绕过幂等闸强制 loadScene。
+    const gs = read('assets/scripts/room/GameScene.ts');
+    const ui = read('assets/scripts/core/UIManager.ts');
+    check('UIManager 提供 reloadGame（强制重载，绕过幂等闸）',
+        /public reloadGame\(params: GameSceneParams\): void \{/.test(ui) &&
+            /reloadGame[\s\S]{0,400}director\.loadScene\(SCENES\.GAME\)/.test(ui),
+        '缺 reloadGame 或它没绕过幂等闸，重开会退化成空操作');
+    check('_restartGame 调 reloadGame 而非 gotoGame',
+        /private _restartGame\(\): void \{[\s\S]{0,1200}uiManager\.reloadGame\(\{/.test(gs),
+        '仍是 gotoGame → 会再次被「已在场景」幂等闸吞掉');
+    check('_hudTick 的结算入口有 _savedRecord 幂等闸',
+        /isFinished\(\) && !this\._savedRecord/.test(gs),
+        '结算可能被重复触发（弹窗重复弹 + 重复写战绩）');
+
+    const sabotaged = gs.replace(/uiManager\.reloadGame\(\{/, 'uiManager.gotoGame({');
+    check('反例自证：改回 gotoGame 后断言会失败',
+        !/private _restartGame\(\): void \{[\s\S]{0,1200}uiManager\.reloadGame\(\{/.test(sabotaged),
+        '说明断言可证伪');
+}
+
 console.log(`\n${fail === 0 ? 'ALL_CHANNEL_LIFECYCLE_PASSED' : 'CHANNEL_LIFECYCLE_FAILURES=' + fail}` +
     `  (${pass} 通过, ${fail} 失败)`);
 process.exit(fail === 0 ? 0 : 1);

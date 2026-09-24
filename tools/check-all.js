@@ -17,7 +17,7 @@
  *   6. test-server-ai（服务端 AI 移植 == 客户端算法，含随机棋局差分）
  *   7. test-gomoku-ai-e2e（真实云函数 AI 回手端到端仿真）
  *   8. test-result-dialog（结算弹窗无灰蒙版 + 拦截层不变式）
- *   9. test-thinking-overlay（「对手思考中」遮罩：共用基类 + 挡点击 + UI_2D 层）
+ *   9. test-thinking-overlay（回合表达与输入拦截：HUD 表达回合 + 棋盘只拦输入不画东西）
  *  10. test-portrait-guards（竖版自适应短屏护栏数值仿真）
  *  11. validate-scenes（场景结构 / 路径契约 / 设计令牌）
  *  12. 云函数 common.js / server-ai.js 副本一致性
@@ -57,7 +57,7 @@ const steps = [
     { name: 'test-server-ai（服务端 AI 与客户端等价）', run: () => node('test-server-ai.js') },
     { name: 'test-gomoku-ai-e2e（云函数 AI 回手端到端）', run: () => node('test-gomoku-ai-e2e.js') },
     { name: 'test-result-dialog（结算弹窗无蒙版）', run: () => node('test-result-dialog.js') },
-    { name: 'test-thinking-overlay（对手思考中遮罩）', run: () => node('test-thinking-overlay.js') },
+    { name: 'test-thinking-overlay（回合表达与输入拦截）', run: () => node('test-thinking-overlay.js') },
     { name: 'test-channel-lifecycle（通道生命周期护栏）', run: () => node('test-channel-lifecycle.js') },
     { name: 'test-ai-fullgame（云函数 AI 整局对拉）', run: () => node('test-ai-fullgame.js') },
     { name: 'test-portrait-guards（竖版护栏仿真）', run: () => node('test-portrait-guards.js') },

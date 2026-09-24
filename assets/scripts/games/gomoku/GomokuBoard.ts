@@ -240,11 +240,11 @@ export class GomokuBoard extends Component {
     }
 
     /**
-     * 显示/隐藏「对手思考中」。
+     * 显示/隐藏「等待对手」状态。
      *
-     * 实现已上移到共用基类 BoardBase（半透明蒙层 + 居中胶囊，并顺带禁用棋盘输入）——
-     * 原先这里是一行裸 Label 直接压在棋盘网格上，视觉突兀且挡不住点击。
-     * 保留本方法作为薄转发，是为了不动 GomokuGame 里的调用点。
+     * 实现已上移到共用基类 BoardBase：那里现在只做**输入拦截 + 关棋盘输入**，
+     * 界面上不画任何东西（2026-09-24 起去掉蒙版与文案，回合归属统一由
+     * GameScene HUD 表达）。保留本方法作为薄转发，是为了不动 GomokuGame 里的调用点。
      */
     public showThinking(show: boolean): void {
         this._renderer.showThinking(show);

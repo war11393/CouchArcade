@@ -189,6 +189,23 @@ export class UIManager {
     }
 
     /**
+     * 强制重新加载对局场景（「再来一局」专用）。
+     *
+     * 与 gotoGame 的唯一区别：**绕过 `_load` 的「已在目标场景就跳过」幂等闸**。
+     * 那道闸是为「两条并行路径都跑到 gotoLobby」设计的，但「再来一局」恰恰
+     * 需要**在同一个场景里重开**——复用场景会让旧对局的控制器与已结束状态
+     * 原样活着，于是重复结算、并用旧数据再写一次战绩（云函数 3s 超时）。
+     */
+    public reloadGame(params: GameSceneParams): void {
+        this._gameParams = params;
+        const cur = director.getScene();
+        console.log(
+            `[UIManager] 强制重载场景 → ${SCENES.GAME}（当前场景=${cur ? cur.name : 'null'}，绕过幂等闸）`,
+        );
+        director.loadScene(SCENES.GAME);
+    }
+
+    /**
      * 取出并清除 Game 参数。
      *
      * ⚠️ 现在是 async：参数允许是一个「建房/准备房间」的异步函数（见 gotoGame）。
