@@ -28,6 +28,8 @@
  *  17. test-planehunt-payload（寻机头翻格字段契约：两端字段名不得漂移）
  *  18. test-room-invite（邀请好友直进房间：分享→解析→入座→开局全链路）
  *  19. test-turn-timer（回合倒计时：超时只告警一次且停表、回合切换必重启）
+ *  20. test-planehunt-finish（寻机头「机头翻满必须结算」：
+ *      权威逐手下发 finished + 客户端消费它 + AI 座位 id 长度约束）
  */
 
 const { execFileSync } = require('child_process');
@@ -64,6 +66,7 @@ const steps = [
     { name: 'test-planehunt-payload（寻机头翻格字段契约：两端字段名不得漂移）', run: () => node('test-planehunt-payload.js') },
     { name: 'test-room-invite（邀请好友直进房间全链路）', run: () => node('test-room-invite.js') },
     { name: 'test-turn-timer（回合倒计时：超时不刷屏 + 切换必重启）', run: () => node('test-turn-timer.js') },
+    { name: 'test-planehunt-finish（寻机头翻满必须结算）', run: () => node('test-planehunt-finish.js') },
     { name: 'test-server-ai（服务端 AI 与客户端等价）', run: () => node('test-server-ai.js') },
     { name: 'test-gomoku-ai-e2e（云函数 AI 回手端到端）', run: () => node('test-gomoku-ai-e2e.js') },
     { name: 'test-result-dialog（结算弹窗无蒙版）', run: () => node('test-result-dialog.js') },

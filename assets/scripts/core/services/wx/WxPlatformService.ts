@@ -203,21 +203,59 @@ export class WxPlatformService implements IPlatformService {
      * 订阅「网络恢复」回调。
      *
      * 时机：断网后重新联网。用于触发对局断线重连。
+     *
+     * ⚠️ 2026-09-25 修复（一直刷屏的 JSBridge 报错就出在这里）：
+     *   ① **缺 API 存在性探测**：`wx.onNetworkStatusChange` 在部分小游戏基础库
+     *      （尤其低版本 / 开发者工具某些通道）里并未实现，直接调用会抛
+     *      TypeError。微信基础库在把这类未捕获异常打给控制台时会加上
+     *      自己的一层封装，于是开发者看到的就是那条莫名其妙的
+     *      **JSBridge 报错**（项目里从没调用过 JSBridge —— 那不是根因）。
+     *      照抄 H5 的 `document.addEventListener('WeixinJSBridgeReady', ...)`
+     *      在本项目**完全无效**：那是内嵌网页（web-view / H5）才有的注入事件，
+     *      原生小游戏里 `wx.*` 由基础库直接提供，该事件永远不会触发。
+     *   ② **取消函数是空壳**：原先直接 `return () => undefined`，注释还写着
+     *      「微信未提供 offNetworkStatusChange」—— 这是错的，基础库 2.x 起
+     *      已提供 `wx.offNetworkStatusChange`。空壳取消导致每次重进房间都
+     *      **再叠一个监听器**，一次断网恢复会触发 N 次 reconnect()。
+     *
+     * @returns 取消订阅函数（真的会解绑）
      */
     public subscribeNetworkRestore(cb: () => void): () => void {
+        // ① 能力探测：没有这个 API 就安静地降级（对局仍靠 onShow / watch 重连），
+        //    绝不把「环境不支持」升级成一条会刷屏的异常。
+        if (typeof wx.onNetworkStatusChange !== 'function') {
+            console.warn(
+                '[WxPlatform] 当前基础库无 onNetworkStatusChange，跳过网络恢复订阅' +
+                    '（断线重连仍由 wx.onShow 触发）',
+            );
+            return () => undefined;
+        }
+
+        const handler = (res: WxOnNetworkStatusChangeResult): void => {
+            if (res && res.isConnected) {
+                cb();
+            }
+        };
+
         try {
-            wx.onNetworkStatusChange((res) => {
-                if (res.isConnected) {
-                    cb();
-                }
-            });
+            wx.onNetworkStatusChange(handler);
         } catch (err) {
+            // 注册本身失败（极少数环境下 API 存在但调用即抛）：
+            // 同样只告警 + 返回空取消，不让它逃逸成未捕获异常。
             console.warn('[WxPlatform] onNetworkStatusChange 注册失败:', err);
             return () => undefined;
         }
-        // 微信未提供 offNetworkStatusChange 的稳定版本，这里返回空取消函数；
-        // 该监听生命周期与应用一致，不随场景销毁，故无需取消。
-        return () => undefined;
+
+        // ② 真正的解绑（能力探测同样必须做：老基础库没有 off 版本）
+        return () => {
+            try {
+                if (typeof wx.offNetworkStatusChange === 'function') {
+                    wx.offNetworkStatusChange(handler);
+                }
+            } catch (err) {
+                console.warn('[WxPlatform] offNetworkStatusChange 失败:', err);
+            }
+        };
     }
 
     /**

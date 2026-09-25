@@ -43,14 +43,14 @@
 | 检查项 | 命令 | 结果 |
 | :--- | :--- | :--- |
 | TypeScript 严格模式 | `.\typecheck.cmd` | ✅ `TYPECHECK_EXIT=0` |
-| 全量自检（**19 层**） | `node tools/check-all.js` | ✅ 全部通过 |
+| 全量自检（**20 层**） | `node tools/check-all.js` | ✅ 全部通过 |
 | 云函数部署 + 依赖在位 | `node tools/deploy-cloudfunctions.js --verify` | ✅ 9/9 源码一致 + `wx-server-sdk@2.6.3` |
 | 场景结构 + 层级护栏 | `node tools/validate-scenes.js` | ✅ `ALL_SCENE_VALIDATIONS_PASSED` |
 
 **未验证**：
 
 - ⚠️ **真人 PvP 完整对局**（邀请链路已通，但「两个真人从入座到结算」尚无
-  端到端实测；现有 19 层自检**无 PvP 全流程覆盖**）
+  端到端实测；现有 20 层自检**无 PvP 全流程覆盖**）
 - ⚠️ 真机手感细节（寻机头「待判定格」动画、五子棋预落子节奏、淡红空格配色）
 - ⚠️ 云数据库集合读权限 —— 需在控制台人工确认
   （`rooms` / `games_gomoku` / `games_planehunt` 须「所有用户可读」，

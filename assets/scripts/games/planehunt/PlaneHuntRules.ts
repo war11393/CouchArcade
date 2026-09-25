@@ -46,6 +46,21 @@ export interface FlipResult {
     score: number;
     nextPlayerId: string;
     planeIndex: number;
+    /**
+     * 这一手是否终结了整局。
+     *
+     * ⚠️ 2026-09-25 补：客户端**必须**消费它才能正确结束对局。
+     *   协议里早就约定该字段（见 Protocol.ts 的 PhFlipResultPayload.finished 与
+     *   云函数 planehunt_flip 的 humanFlipRecord），但权威原先**没有产出它**，
+     *   于是 Mock 模式下「AI 翻出最后一个机头」时，客户端只能靠 GAME_OVER
+     *   这唯一一条通道收尾 —— 那条通道一旦没到，对局就永不结算（单机实测bug）。
+     *   这里由权威在结束时产出，与云函数行为对齐。
+     */
+    finished: boolean;
+    /** 结束时才有意义：胜者 playerId（平局为空串）。 */
+    winnerId: string;
+    /** 结束时才有意义：是否平局。 */
+    draw: boolean;
 }
 
 /** 得分统计。 */
@@ -264,6 +279,11 @@ export class PlaneHuntRules {
             score: this._scores.get(playerId) ?? 0,
             nextPlayerId: this._currentPlayerId,
             planeIndex,
+            // 结束态随每一手下发（权威判定，客户端消费它在最后一手立即结算）。
+            // 见 FlipResult.finished 的说明：缺这两个字段就是单机「永不结束」的成因。
+            finished: this._finished,
+            winnerId: this._winnerId,
+            draw: this._draw,
         };
         this._lastResult = result;
         return result;

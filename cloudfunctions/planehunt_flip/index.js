@@ -387,20 +387,46 @@ async function runAiFlips(ctx, st) {
         });
     }
 
-    await ctx.db.collection(st.colName).doc(st.gameDocId).update({
-        data: {
-            revealed: st.revealed,
-            scores: st.scores,
-            moves: st.moves,
-            headsFound: last.headsFound,
-            currentPlayerId: last.nextPlayerId,
-            finished: last.finished,
-            winnerId: last.winnerId,
-            draw: last.draw,
-            flips: flips,
-            updatedAt: Date.now(),
-        },
-    });
+    const patch = {
+        revealed: st.revealed,
+        scores: st.scores,
+        moves: st.moves,
+        headsFound: last.headsFound,
+        currentPlayerId: last.nextPlayerId,
+        finished: last.finished,
+        winnerId: last.winnerId,
+        draw: last.draw,
+        flips: flips,
+        updatedAt: Date.now(),
+    };
+
+    try {
+        await ctx.db.collection(st.colName).doc(st.gameDocId).update({ data: patch });
+    } catch (err) {
+        // ── 降级：绝不让「一个非法字段」吃掉整局写库 ──
+        //
+        // 背景（2026-09-25 定位到的真机事故）：`currentPlayerId` 写的是玩家 id，
+        // 而 AI 座位的 id 由服务端自己生成。一旦它不满足云数据库对
+        // **文档 `_id` 形状**的要求（24 位十六进制 / 合法 oid 字符串），
+        // `doc(id).update()` 会**整条拒绝** —— 不是丢一个字段，而是
+        // `finished/winnerId/draw` 一个都写不进去。
+        // 对局永远停在「未结束」，客户端也就永远等不到结束信号。
+        //
+        // 因此这里重试一次：只去掉「可能非法」的那一个字段先保住结束态。
+        // 回合归属在对局结束时本来就无意义（客户端消费 finished 后立即结算），
+        // 丢它没有副作用；而结束态丢了就是**死局**。
+        console.error(
+            `[planehunt_flip] AI 回手写库失败（可能是 currentPlayerId 形状非法）：` +
+                `${(err && err.message) || err}；改为「不带 currentPlayerId」重试`,
+        );
+        const degraded = Object.assign({}, patch);
+        delete degraded.currentPlayerId;
+        await ctx.db.collection(st.colName).doc(st.gameDocId).update({ data: degraded });
+        console.warn(
+            `[planehunt_flip] 已降级写入结束态 finished=${patch.finished} ` +
+                `winnerId=${patch.winnerId || '(平局)'}（currentPlayerId 未更新）`,
+        );
+    }
     return out;
 }
 

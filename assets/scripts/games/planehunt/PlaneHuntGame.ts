@@ -164,6 +164,14 @@ export class PlaneHuntAuthority implements IMockAuthority {
                 score: this._rules.scoreOf(rev.byPlayerId),
                 nextPlayerId: this._rules.currentPlayerId,
                 planeIndex: rev.planeIndex,
+                // ⚠️ 结束态必须一起重放：重连时对局可能**早就结束了**，
+                //    客户端此时是新建的 Game 实例（_finished=false），
+                //    全部格子又都已揭示 → 所有重放帧都会命中「幂等短路」被跳过，
+                //    若不带 finished，客户端就永远停在「对局中」。
+                //    见 FlipResult.finished / PlaneHuntGame._commitFlip 的说明。
+                finished: this._rules.finished,
+                winnerId: this._rules.winnerId,
+                draw: this._rules.isDraw,
             } as PhFlipResultPayload),
         );
     }
@@ -495,6 +503,38 @@ export class PlaneHuntGame implements IGame {
         // 推演棋局，与「布局/判定全在权威方」的防篡改设计相悖。
         // 「哪些格已翻开」由 PlaneHuntBoard 自维护（见 revealCell / isRevealedInBoard）。
 
+        // ★ 权威说这局结束了 —— 必须在这里就结束，不能只等 GAME_OVER。
+        //
+        // 为什么（2026-09-25 单机模式实测的 bug）：
+        //   寻机头有**两条**结束通道，而客户端原先只消费了其中一条：
+        //     ① PH_FLIP_RESULT.finished（云函数 planehunt_flip 写在每一手里）；
+        //     ② GAME_OVER（WxNetSyncService 在 watch 到 doc.finished=true 时补发）。
+        //   而 Mock（单机/练习）模式下 ② 的发送方是 MockNetSyncService +
+        //   PlaneHuntAuthority：authority 只在 handleUpstream / pollAiAction 里
+        //   产出 GAME_OVER，**AI 在 pollAiAction 中翻出最后一个机头时虽然会 push
+        //   一条 GAME_OVER，但那条消息依赖轮询时序**；一旦时序错位（或走的是
+        //   别的权威路径），客户端就再没有任何东西能把它从「对局中」里拉出来。
+        //   症状：机头进度已经 5/5、棋盘也点不动了，但**永不结算**（不弹结算页）。
+        //   `p.finished` 本来就是权威对「这一手是否终结了整局」的判定，
+        //   直接用它是最可靠、也最少耦合的修法（协议里早已约定该字段，
+        //   见 Protocol.ts 的 PhFlipResultPayload.finished 与云函数的 humanFlipRecord）。
+        //
+        // 取值口径：finished 为真时回合归属已无意义（权威也会把 nextPlayerId
+        // 留在最后一手方），故立刻结束、不再刷新回合 HUD。
+        if (p.finished === true) {
+            const raw2 = p as unknown as Record<string, unknown>;
+            const winner = (p.winnerId ?? (raw2.winnerId as string) ?? '') as string;
+            // 缺 winnerId 时不能当成平局 —— 权威只在结束时填它，
+            // 但**旧版云函数返回体里没有这个字段**（见 planehunt_flip 的注释），
+            // 那种情况下退回「按比分判定」，而不是武断地判平。
+            const resolvedWinner = winner || this._leaderOf(byPlayerId === this._ctx.myPlayerId ? score : undefined);
+            const isDraw = typeof p.draw === 'boolean'
+                ? p.draw
+                : !resolvedWinner;
+            this._finishGame(resolvedWinner, isDraw, isDraw ? 'draw' : 'win');
+            return;
+        }
+
         if (this._board) {
             this._board.showThinking(false);
             // 归属按 byPlayerId 判定（信封里的 playerId 是权威代发的发送者，
@@ -513,7 +553,17 @@ export class PlaneHuntGame implements IGame {
         // ⚠️ 必须用权威回合 + 未结束来重算输入开关。
         //    只在这里设置输入状态，且条件含 nextPlayerId —— 曾经漏了这步，
         //    导致回合切回我方时棋盘仍是「不可点」的。
-        const myTurnNow = !this._finished && nextPlayerId === this._ctx.myPlayerId;
+        //
+        // ⚠️ 2026-09-25 加固：下一手方的「判不了」与「不是我」必须区分开。
+        //    旧实现里 `nextPlayerId` 走的是「缺失就保持当前回合」的兜底
+        //    （见本方法开头的字段容错），所以这里一般不会拿到空串；
+        //    但断线重连重放**首帧**（服务端还没写 currentPlayerId 的历史文档）等
+        //    极端情况下仍可能为空。此时若直接按「不是我 → 禁用输入」处理，
+        //    棋盘会永久不可点，玩家眼里和「卡死」无异。
+        //    口径：判不了就**保持现状**（不要单向地把输入关死），
+        //    由 GameScene 的继续轮询（isMyTurn 会随权威消息更新）自然收敛。
+        const myTurnNow = !this._finished
+            && (nextPlayerId ? nextPlayerId === this._ctx.myPlayerId : this.isMyTurn());
         if (this._board) {
             this._board.setInputEnabled(myTurnNow);
         }
@@ -527,6 +577,34 @@ export class PlaneHuntGame implements IGame {
     /** 机头总数（从房间配置推导，第一阶段固定 5）。 */
     private _headTotal(): number {
         return this._rules ? this._rules.totalHeads : 5;
+    }
+
+    /**
+     * 从当前棋盘比分推出领先者（仅用于「权威没给 winnerId」的兜底）。
+     *
+     * 为什么需要：`planehunt_flip` 的**旧版返回体没有 winnerId/draw**
+     * （见该函数「对局结束标志必须回传」的注释），断线重连时也可能重放旧形状。
+     * 此时若直接用空 winnerId 当「平局」，会把赢的一局显示成平局 ——
+     * 这是比「不结束」更糟的**错误结算**，所以宁可退一步按比分判。
+     *
+     * @param myScoreIfKnown 若这一手是我翻的，调用方已知我的最新比分（权威下发值）
+     */
+    private _leaderOf(myScoreIfKnown?: number): string {
+        const myId = this._ctx.myPlayerId;
+        const oppId = this._ctx.opponent.playerId;
+        const mine = typeof myScoreIfKnown === 'number'
+            ? myScoreIfKnown
+            : (this._board ? this._board.getMyScore() : 0);
+        const theirs = this._board ? this._board.getOppScore() : 0;
+        if (mine === theirs) {
+            return '';
+        }
+        return mine > theirs ? myId : oppId;
+    }
+
+    /** 比分兜底：非有限数字一律归 0（避免结算页出现 "undefined"/NaN）。 */
+    private _safeScore(v: unknown): number {
+        return typeof v === 'number' && Number.isFinite(v) ? v : 0;
     }
 
     /**
@@ -554,8 +632,12 @@ export class PlaneHuntGame implements IGame {
 
         const myId = this._ctx.myPlayerId;
         const oppId = this._ctx.opponent.playerId;
-        const myScore = this._board ? this._board.getMyScore() : 0;
-        const oppScore = this._board ? this._board.getOppScore() : 0;
+        // 比分取自棋盘（HUD 同源）。⚠️ 权威的 GAME_OVER payload 里其实带 stats，
+        // 但寻机头这条通道原先没消费它 —— 这里保持「以棋盘为准」，
+        // 只有当棋盘给的数字不可信（缺失/NaN）时才退回 0，而不是把 undefined
+        // 灌进结算页（2026-09-24 真机反馈过「很多 undefined」）。
+        const myScore = this._safeScore(this._board ? this._board.getMyScore() : 0);
+        const oppScore = this._safeScore(this._board ? this._board.getOppScore() : 0);
 
         this._result = {
             gameId: this.gameId,

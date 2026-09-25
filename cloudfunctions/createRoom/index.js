@@ -28,6 +28,29 @@ const PLAYER_COUNT = {
     gomoku: 2,
 };
 
+/**
+ * AI 座位的 playerId。
+ *
+ * ⚠️ 长度有硬约束：**不得超过 24 个字符**。
+ *
+ * 这个值会被当作 `currentPlayerId` 写进 `games_gomoku` / `games_planehunt`。
+ * 微信云数据库的 `doc(id).update()` 要求 `_id` 是 24 位十六进制（即 oid 形态），
+ * 传别的形状进去会被**拒绝**：`_id` 校验失败 —— 而 update 失败是抛错，
+ * 后果是**整条 data 都不落库**（不是「只丢一个字段」）。
+ *
+ * 实例（2026-09-25）：寻机头 AI 翻出最后一个机头时，`planehunt_flip` 的
+ * runAiFlips 会把 `currentPlayerId = <AI 的 playerId>` 一起写库，
+ * 一旦这个 id 非法，`finished/winnerId/draw` 就永远写不进去 →
+ * 客户端看不到任何结束信号 → **对局永不结算**（真机表现为「机头翻满了不结束」）。
+ *
+ * 所以这里用固定长度（2 + 10 + 2 + 1 = **15 位**，且房间号是数字、
+ * 不含 `-`，天然是合法 hex 形状），并把它固化进回归测试
+ * tools/test-planehunt-finish.js。
+ */
+function aiSeatId(roomId, seatIndex) {
+    return 'ai' + roomId + 's' + seatIndex;
+}
+
 /** 房间号最大重试次数。 */
 const MAX_ROOM_ID_RETRY = 10;
 
@@ -112,7 +135,7 @@ exports.main = wrap('createRoom', async function (ctx, event) {
         for (let i = 1; i < maxPlayers; i++) {
             seats[i] = {
                 seatIndex: i,
-                playerId: 'ai-' + roomId + '-' + i,
+                playerId: aiSeatId(roomId, i),
                 nickname: AI_NICKNAMES[(i - 1) % AI_NICKNAMES.length],
                 avatarUrl: '',
                 // ⚠️ ready 必须为 true：AI 不会自己点准备

@@ -134,6 +134,24 @@ export interface PhFlipResultPayload {
     nextPlayerId: string;
     /** 该格所属飞机编号（-1 表示非飞机），用于 UI 高亮整机 */
     planeIndex: number;
+    /**
+     * 这一手是否终结了整局（权威判定）。
+     *
+     * ⚠️ 2026-09-25 起客户端**必须消费**该字段：
+     *   寻机头原先只有 GAME_OVER 一条结束通道，而单机（Mock）模式下那条通道
+     *   可能不来 → 机头翻满了对局也不结算（实测 bug）。
+     *   现在「最后一格」这条 PH_FLIP_RESULT 自身就是结束信号。
+     */
+    finished?: boolean;
+    /**
+     * 结束时才有意义：胜者 openid（平局为空串）。
+     *
+     * 可选：`planehunt_flip` 的历史返回体没有它（见该函数注释），
+     * 客户端在缺失时应退化为「按比分判定」，**不要**当成平局。
+     */
+    winnerId?: string;
+    /** 结束时才有意义：是否平局（同样可能缺失）。 */
+    draw?: boolean;
 }
 
 /** 寻机头：布局同步（仅下发已揭示信息，不下发明文布局）。 */
