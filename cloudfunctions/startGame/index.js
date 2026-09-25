@@ -296,6 +296,25 @@ async function createGomokuGame(ctx, room, seed, now) {
 
 /**
  * 生成寻机头布局（服务端权威，算法与客户端同构）。
+ *
+ * ── 算法：**回溯搜索**（2026-09-25 重写，与客户端 PlaneHuntLayout.ts 等价）──
+ *
+ * 旧实现是「随机撒点 + 碰撞检测 + 失败重试（上限 400×架数）」，
+ * 实测**灾难性**：5000 个 seed 里只有 26.5% 能放满 5 架 ——
+ *   3 架 5.3% ｜ 4 架 68.2% ｜ 5 架 26.5%
+ * 而棋盘占用率才 50 格/100 格，空间根本够 —— 是随机撒点会把棋盘切碎成
+ * 容不下剩余飞机的小块，之后的重试全在死路上撞。
+ * 后果不只是难看：机头总数决定「何时结束」，少一架等于白送一局。
+ *
+ * 现在改为：把「(朝向, 左上角)」的全部合法摆放位置按 rng **洗牌**后
+ * 深度优先尝试，放不下就回退。既保留随机观感（同 seed 结果确定），
+ * 又**在解存在时必然找到**。实测 5000 seed 全部放满 5 架。
+ *
+ * ⚠️⚠️ 本函数与客户端 `assets/scripts/games/planehunt/PlaneHuntLayout.ts`
+ *   的 `PlaneHuntLayoutProvider.generate()` 必须**逐字等价**：
+ *   两端用同一 seed 各自算一份布局（服务端权威 + 客户端影子），
+ *   算法一旦漂移，玩家会看到「翻开的格子与权威判定对不上」。
+ *   改这里必须同步改那边（反之亦然），且**都要用同一顺序消费 rng**。
  */
 function generatePlaneLayout(seed, size, planeCount) {
     const rng = makeRng(seed);
@@ -330,63 +349,136 @@ function generatePlaneLayout(seed, size, planeCount) {
      */
     const occupied = new Set();
 
-    let placed = 0;
-    let retry = 0;
-    const maxRetry = 400 * planeCount;
-
-    while (placed < planeCount && retry < maxRetry) {
-        retry++;
-        const shape = rotateShape(PLANE_SHAPE, rng.pick(rotations));
+    // ── 1) 枚举全部候选摆放 ──
+    const placements = [];
+    for (let ri = 0; ri < rotations.length; ri++) {
+        const shape = rotateShape(PLANE_SHAPE, rotations[ri]);
         const h = shape.length;
         const w = shape[0].length;
-
-        const originRow = rng.int(0, size - h);
-        const originCol = rng.int(0, size - w);
-
-        const pending = [];
-        let overlap = false;
-        for (let r = 0; r < h && !overlap; r++) {
-            for (let c = 0; c < w; c++) {
-                const v = shape[r][c];
-                if (v === 0) {
-                    continue;
+        for (let originRow = 0; originRow + h <= size; originRow++) {
+            for (let originCol = 0; originCol + w <= size; originCol++) {
+                const cellsAt = [];
+                for (let r = 0; r < h; r++) {
+                    for (let c = 0; c < w; c++) {
+                        const v = shape[r][c];
+                        if (v === 0) {
+                            continue;
+                        }
+                        cellsAt.push({ row: originRow + r, col: originCol + c, v: v });
+                    }
                 }
-                const gr = originRow + r;
-                const gc = originCol + c;
-                // 与已放置飞机：**实体格不得重叠**（唯一可行约束，见 occupied 说明）
-                if (occupied.has(key(gr, gc))) {
-                    overlap = true;
-                    break;
-                }
-                pending.push({ row: gr, col: gc, v: v });
+                placements.push({
+                    rotation: rotations[ri],
+                    shape: shape,
+                    originRow: originRow,
+                    originCol: originCol,
+                    cellsAt: cellsAt,
+                });
             }
         }
-        if (overlap) {
-            continue;
-        }
+    }
 
+    // ── 2) 洗牌（Fisher-Yates，用 rng 保证确定性）──
+    // 与客户端同一做法；顺序必须完全一致，否则双端布局不同。
+    for (let i = placements.length - 1; i > 0; i--) {
+        const j = rng.int(0, i);
+        const tmp = placements[i];
+        placements[i] = placements[j];
+        placements[j] = tmp;
+    }
+
+    // ── 3) 深度优先 + 回退 ──
+    const chosen = [];
+    let nodes = 0;
+    let budgetExhausted = false;
+    const MAX_NODES = 200000;
+
+    function canPlace(p) {
+        for (let i = 0; i < p.cellsAt.length; i++) {
+            if (occupied.has(key(p.cellsAt[i].row, p.cellsAt[i].col))) {
+                return false;
+            }
+        }
+        return true;
+    }
+    function doPlace(p) {
+        for (let i = 0; i < p.cellsAt.length; i++) {
+            occupied.add(key(p.cellsAt[i].row, p.cellsAt[i].col));
+        }
+    }
+    function undoPlace(p) {
+        for (let i = 0; i < p.cellsAt.length; i++) {
+            occupied.delete(key(p.cellsAt[i].row, p.cellsAt[i].col));
+        }
+    }
+
+    /**
+     * 尝试放第 idx 架，成功返回 true。
+     *
+     * ⚠️ 计数口径：`nodes` **只在真正尝试放置时**自增，不能对被 canPlace
+     *    拒绝的候选也计数 —— placements 有约 190 项，连拒绝都计数会瞬间
+     *    吃光预算，导致「一架都放不下」。详见客户端同名函数的说明。
+     */
+    function search(idx) {
+        if (idx >= planeCount) {
+            return true;
+        }
+        for (let pi = 0; pi < placements.length; pi++) {
+            const p = placements[pi];
+            if (!canPlace(p)) {
+                continue;
+            }
+            nodes++;
+            if (nodes > MAX_NODES) {
+                budgetExhausted = true;
+                return false;
+            }
+            doPlace(p);
+            chosen.push(p);
+            if (search(idx + 1)) {
+                return true;
+            }
+            chosen.pop();
+            undoPlace(p);
+        }
+        return false;
+    }
+
+    const solved = search(0);
+    if (!solved && !budgetExhausted) {
+        console.error(
+            `[generatePlaneLayout] 布局无解（seed=${seed}，节点=${nodes}）：` +
+                `${size}×${size} 放不下 ${planeCount} 架且搜索已穷尽`,
+        );
+    }
+
+    // ── 4) 落盘 ──
+    for (let i = 0; i < chosen.length; i++) {
+        const p = chosen[i];
         let headRow = -1;
         let headCol = -1;
-        pending.forEach(function (p) {
-            cells[p.row][p.col] = p.v;
-            planeIndexAt[p.row][p.col] = placed;
-            occupied.add(key(p.row, p.col));
-            if (p.v === 2) {
-                headRow = p.row;
-                headCol = p.col;
+        for (let k = 0; k < p.cellsAt.length; k++) {
+            const cell = p.cellsAt[k];
+            cells[cell.row][cell.col] = cell.v;
+            planeIndexAt[cell.row][cell.col] = i;
+            if (cell.v === 2) {
+                headRow = cell.row;
+                headCol = cell.col;
             }
-        });
-
+        }
         if (headRow < 0) {
             continue;
         }
-
-        heads.push({ row: headRow, col: headCol, planeIndex: placed });
-        placed++;
+        heads.push({ row: headRow, col: headCol, planeIndex: i });
     }
 
+    const placed = heads.length;
     if (placed < planeCount) {
-        console.error(`[generatePlaneLayout] 仅放置 ${placed}/${planeCount} 架（seed=${seed}）`);
+        // ⚠️ 缺陷级信号：机头总数决定何时结束，少一架会让对局提前结束/比分失真
+        console.error(
+            `[generatePlaneLayout] 仅放置 ${placed}/${planeCount} 架（seed=${seed}，` +
+                `节点=${nodes}${budgetExhausted ? '，已耗尽预算' : '，搜索完整无解'}）`,
+        );
     }
 
     return {

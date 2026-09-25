@@ -32,6 +32,8 @@
  *      权威逐手下发 finished + 客户端消费它 + AI 座位 id 长度约束）
  *  21. test-busy-overlay（等待遮罩：能力面 / 幂等 / **每个 showBusy 必有
  *      hideBusy 收尾** / 拦输入与浮层挂载 / 反例自证）
+ *  22. test-planehunt-layout（寻机头布局：**不再残缺**（旧算法仅 26.5% 放满）
+ *      / 双端 cells+heads+fingerprint 逐字一致 / 确定性 / 形态合法）
  */
 
 const { execFileSync } = require('child_process');
@@ -70,6 +72,7 @@ const steps = [
     { name: 'test-turn-timer（回合倒计时：超时不刷屏 + 切换必重启）', run: () => node('test-turn-timer.js') },
     { name: 'test-planehunt-finish（寻机头翻满必须结算）', run: () => node('test-planehunt-finish.js') },
     { name: 'test-busy-overlay（等待遮罩收尾与拦截）', run: () => node('test-busy-overlay.js') },
+    { name: 'test-planehunt-layout（寻机头布局：不残缺 + 双端一致）', run: () => node('test-planehunt-layout.js') },
     { name: 'test-server-ai（服务端 AI 与客户端等价）', run: () => node('test-server-ai.js') },
     { name: 'test-gomoku-ai-e2e（云函数 AI 回手端到端）', run: () => node('test-gomoku-ai-e2e.js') },
     { name: 'test-result-dialog（结算弹窗无蒙版）', run: () => node('test-result-dialog.js') },

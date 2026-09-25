@@ -100,13 +100,36 @@ export class Rng {
  * 寻机头布局生成器（实现 ILayoutProvider）。
  */
 export class PlaneHuntLayoutProvider implements ILayoutProvider {
-    /** 生成布局的最大重试次数（防止死循环）。 */
-    private static readonly MAX_RETRY = 400;
+    /**
+     * 回溯搜索的节点预算（防止极端输入下卡死）。
+     *
+     * 取值理由（2026-09-25 实测）：10×10 放 5 架十字战机，
+     * 正确实现下**首个解通常只需几十个节点**；给到 20 万是极宽的余量，
+     * 正常永远不会触顶。它只是「万一将来改棋盘/机型导致无解」时的刹车。
+     */
+    private static readonly MAX_NODES = 200000;
 
     /**
      * 生成 5 架飞机的布局。
      *
-     * 算法：随机位置 + 随机朝向 + 碰撞检测 + 失败重试。
+     * ── 算法：**回溯搜索**（2026-09-25 重写）──
+     *
+     * 旧实现是「随机撒点 + 碰撞检测 + 失败重试（上限 400×架数）」，
+     * 实测**灾难性**：5000 个 seed 里只有 26.5% 能放满 5 架 ——
+     *   3 架 5.3% ｜ 4 架 68.2% ｜ 5 架 26.5%
+     * 而棋盘占用率才 50 格/100 格。也就是说**空间根本够**，
+     * 是随机撒点会把棋盘切碎成容不下剩余飞机的小块，之后的重试全在死路上撞。
+     * 后果不只是难看：机头总数决定「何时结束」，少一架等于白送一局。
+     *
+     * 现在改为：把「(朝向, 左上角)」的全部合法摆放位置按 rng **洗牌**后
+     * 深度优先尝试，放不下就回退。这样既保留随机观感（同 seed 结果确定），
+     * 又**在解存在时必然找到**——不再有「概率性残缺布局」。
+     *
+     * 确定性保证（双端一致性依赖它）：全程只用传入 seed 构造的 rng，
+     * 且洗牌/尝试顺序完全由它决定 ⇒ 同 seed 必得同布局。
+     * ⚠️ 本算法在 cloudfunctions/startGame/index.js 有一份**逐字等价**的实现
+     *    （云函数不能用 TS），改这里必须同步改那边，否则客户端影子布局
+     *    与权威布局不一致 —— 玩家会看到「翻开的格子与权威判定对不上」。
      */
     public generate(seed: number): PlaneLayout {
         const size = AppConfig.PLANEHUNT_SIZE;
@@ -121,87 +144,164 @@ export class PlaneHuntLayoutProvider implements ILayoutProvider {
         }
 
         const heads: Array<{ row: number; col: number; planeIndex: number }> = [];
-        const rotations: Rotation[] = [0, 90, 180, 270];
-        /** 已占用的格子集合，用于重叠检测。 */
+        /** 已占用的**实体格**集合（唯一可行约束，见下方 placements 的说明）。 */
         const occupied = new Set<number>();
         const key = (r: number, c: number): number => r * size + c;
 
-        let placed = 0;
-        let retry = 0;
-
-        while (placed < planeCount && retry < PlaneHuntLayoutProvider.MAX_RETRY * planeCount) {
-            retry++;
-            const rotation = rng.pick(rotations);
+        // ── 1) 枚举全部候选摆放 ──
+        // 每个候选 = 一种朝向 + 一个左上角，附带它要占的实体格。
+        // 只保留「不越界」的候选；重叠在搜索时动态判断（随占用变化）。
+        interface Placement {
+            rotation: Rotation;
+            shape: number[][];
+            originRow: number;
+            originCol: number;
+            /** 实体格坐标（含值为 1/2 的格）。 */
+            cellsAt: Array<{ row: number; col: number; v: number }>;
+        }
+        const placements: Placement[] = [];
+        const rotations: Rotation[] = [0, 90, 180, 270];
+        for (const rotation of rotations) {
             const shape = this.rotateShape(PLANE_SHAPE, rotation);
             const shapeH = shape.length;
             const shapeW = shape[0].length;
-
-            // 随机左上角；留出边界
-            const originRow = rng.int(0, size - shapeH);
-            const originCol = rng.int(0, size - shapeW);
-
-            // 越界检查（理论上 rng 已保证，仍显式校验）
-            if (originRow < 0 || originCol < 0 || originRow + shapeH > size || originCol + shapeW > size) {
-                continue;
-            }
-
-            // 收集本次将占用的格子
-            const pending: Array<{ row: number; col: number; v: number }> = [];
-            let overlap = false;
-            for (let r = 0; r < shapeH && !overlap; r++) {
-                for (let c = 0; c < shapeW; c++) {
-                    const v = shape[r][c];
-                    if (v === 0) {
-                        continue;
+            for (let originRow = 0; originRow + shapeH <= size; originRow++) {
+                for (let originCol = 0; originCol + shapeW <= size; originCol++) {
+                    const cellsAt: Array<{ row: number; col: number; v: number }> = [];
+                    for (let r = 0; r < shapeH; r++) {
+                        for (let c = 0; c < shapeW; c++) {
+                            const v = shape[r][c];
+                            if (v === 0) {
+                                continue;
+                            }
+                            cellsAt.push({ row: originRow + r, col: originCol + c, v });
+                        }
                     }
-                    const gr = originRow + r;
-                    const gc = originCol + c;
-                    if (occupied.has(key(gr, gc))) {
-                        overlap = true;
-                        break;
-                    }
-                    pending.push({ row: gr, col: gc, v });
+                    placements.push({ rotation, shape, originRow, originCol, cellsAt });
                 }
             }
-
-            if (overlap) {
-                continue; // 失败重试
-            }
-
-            // 提交放置
-            let headRow = -1;
-            let headCol = -1;
-            for (const p of pending) {
-                cells[p.row][p.col] = p.v;
-                planeIndexAt[p.row][p.col] = placed;
-                occupied.add(key(p.row, p.col));
-                if (p.v === CELL_HEAD) {
-                    headRow = p.row;
-                    headCol = p.col;
-                }
-            }
-
-            if (headRow < 0) {
-                // 理论上不会发生（形态矩阵必含机头）；防御性回滚
-                for (const p of pending) {
-                    cells[p.row][p.col] = CELL_EMPTY;
-                    planeIndexAt[p.row][p.col] = -1;
-                    occupied.delete(key(p.row, p.col));
-                }
-                continue;
-            }
-
-            heads.push({ row: headRow, col: headCol, planeIndex: placed });
-            placed++;
         }
 
-        if (placed < planeCount) {
+        // ── 2) 洗牌（Fisher-Yates，用 rng 保证确定性）──
+        // 洗一次即可：回溯会按这个固定顺序深度优先尝试。
+        // 为什么不每层重新洗：那样同一 seed 的结果会依赖搜索路径，
+        // 难以复现、也不便两端比对。固定顺序 + 回溯已足够产生随机观感。
+        for (let i = placements.length - 1; i > 0; i--) {
+            const j = rng.int(0, i);
+            const tmp = placements[i];
+            placements[i] = placements[j];
+            placements[j] = tmp;
+        }
+
+        // ── 3) 深度优先 + 回退 ──
+        /** 已选中的摆放（按放置顺序）。 */
+        const chosen: Placement[] = [];
+        /** 搜索节点计数（预算保护）。 */
+        let nodes = 0;
+        /** 是否因预算耗尽而中止（用于区分「无解」与「没搜完」）。 */
+        let budgetExhausted = false;
+
+        const canPlace = (p: Placement): boolean => {
+            for (const cell of p.cellsAt) {
+                if (occupied.has(key(cell.row, cell.col))) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        const doPlace = (p: Placement): void => {
+            for (const cell of p.cellsAt) {
+                occupied.add(key(cell.row, cell.col));
+            }
+        };
+        const undoPlace = (p: Placement): void => {
+            for (const cell of p.cellsAt) {
+                occupied.delete(key(cell.row, cell.col));
+            }
+        };
+
+        /**
+         * 尝试放第 idx 架，成功返回 true。
+         *
+         * 剪枝：候选按洗牌顺序线性扫描 —— 不做「按剩余空间」的启发式排序，
+         * 因为那会引入额外状态、让两端实现更容易漂移；本棋盘规模下
+         * 朴素回溯已经足够快（实测首个解几十个节点）。
+         *
+         * ⚠️ 计数口径（2026-09-25 踩过）：`nodes` **只在真正尝试放置时**自增，
+         *    不能对每个被 canPlace 拒绝的候选都计数。placements 有约 190 个项目，
+         *    若连拒绝也计数，5 层搜索里无效访问会把预算瞬间吃光 →
+         *    search 在第一层就返回 false → **一架都放不下（0 个机头）**。
+         *    那比原来的概率性残缺更糟，是本次修正的直接原因。
+         */
+        const search = (idx: number): boolean => {
+            if (idx >= planeCount) {
+                return true;
+            }
+            for (const p of placements) {
+                if (!canPlace(p)) {
+                    continue;
+                }
+                // 只有「确实产生了分支」才算一个搜索节点
+                nodes++;
+                if (nodes > PlaneHuntLayoutProvider.MAX_NODES) {
+                    budgetExhausted = true;
+                    return false;
+                }
+                doPlace(p);
+                chosen.push(p);
+                if (search(idx + 1)) {
+                    return true;
+                }
+                chosen.pop();
+                undoPlace(p);
+            }
+            return false;
+        };
+
+        const solved = search(0);
+        if (!solved && !budgetExhausted) {
+            // 搜索完整走完仍放不下 —— 说明约束本身与棋盘不相容（真·无解）。
+            // 正常情况下不该出现；出现即需重新评估尺寸/架数/形态。
             console.error(
-                `[PlaneHuntLayout] 布局生成失败：仅放置 ${placed}/${planeCount} 架（seed=${seed}）`,
+                `[PlaneHuntLayout] 布局无解（seed=${seed}，节点=${nodes}）：` +
+                    `${size}×${size} 放不下 ${planeCount} 架且搜索已穷尽`,
+            );
+        }
+
+        // ── 4) 落盘（无论是否放满都写出已放置部分，保持旧行为可观测）──
+        for (let i = 0; i < chosen.length; i++) {
+            const p = chosen[i];
+            let headRow = -1;
+            let headCol = -1;
+            for (const cell of p.cellsAt) {
+                cells[cell.row][cell.col] = cell.v;
+                planeIndexAt[cell.row][cell.col] = i;
+                if (cell.v === CELL_HEAD) {
+                    headRow = cell.row;
+                    headCol = cell.col;
+                }
+            }
+            if (headRow < 0) {
+                // 理论上不会发生（形态矩阵必含机头）；防御性跳过
+                continue;
+            }
+            heads.push({ row: headRow, col: headCol, planeIndex: i });
+        }
+
+        const placed = heads.length;
+        if (placed < planeCount) {
+            // ⚠️ 这是**缺陷级**信号，不是普通警告：机头总数决定何时结束，
+            //    少一架会让对局提前结束/比分失真。用 error 级别 + 明确后果描述。
+            console.error(
+                `[PlaneHuntLayout] 布局生成失败：仅放置 ${placed}/${planeCount} 架（seed=${seed}，` +
+                    `节点=${nodes}${budgetExhausted ? '，已耗尽预算' : '，搜索完整无解'}）——` +
+                    '本轮机头总数将是 ' +
+                    placed +
+                    '，对局会据此提前结束。请检查棋盘尺寸/飞机数与形态是否仍相容。',
             );
         } else if (AppConfig.LOG_VERBOSE) {
             console.log(
-                `[PlaneHuntLayout] 布局生成成功：${placed} 架飞机（seed=${seed}, 重试 ${retry} 次）`,
+                `[PlaneHuntLayout] 布局生成成功：${placed} 架飞机（seed=${seed}, 节点 ${nodes}）`,
             );
         }
 
@@ -212,7 +312,6 @@ export class PlaneHuntLayoutProvider implements ILayoutProvider {
             heads,
             fingerprint: this._fingerprint(seed, heads),
         };
-
         // 开局打印完整棋盘（人工核对形态用）。
         // ⚠️ 这是**客户端本地**那份（由 seed 推导的影子布局），
         //    翻格结果仍以云端权威下发为准；但核对「形态对不对」看这份即可
