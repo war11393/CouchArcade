@@ -21,6 +21,7 @@ import {
     MaskType,
     Node,
     ScrollView,
+    tween,
     UIOpacity,
     UITransform,
     Vec3,
@@ -88,6 +89,27 @@ export class UIManager {
     private _gameParams: GameSceneParams | (() => Promise<GameSceneParams>) | null = null;
     /** 当前 Toast 节点。 */
     private _toastNode: Node | null = null;
+    /** 当前等待遮罩节点（见 showBusy）。 */
+    private _busyNode: Node | null = null;
+    /** 等待遮罩的文案 Label（供 updateBusy 改写）。 */
+    private _busyLabel: Label | null = null;
+    /** 等待遮罩的补充说明 Label。 */
+    private _busyDetailLabel: Label | null = null;
+    /** 等待遮罩的「已等待秒数」Label。 */
+    private _busyTimerLabel: Label | null = null;
+    /** 等待起始时刻（0 = 无等待）。 */
+    private _busySince = 0;
+    /** 等待遮罩的计时刷新句柄。 */
+    private _busyTick: ReturnType<typeof setInterval> | null = null;
+
+    /**
+     * 超过这个秒数就在等待遮罩上补一句「网络较慢，仍在处理」。
+     *
+     * 取值理由：正常云函数往返 100~600ms，4s 已属明显偏慢；
+     * 但**不能**在这个点就报错或撤掉遮罩 —— 冷启动可能到 3~5s。
+     * 所以这里只加一句安抚文案，把「还要不要等」的判断留给业务超时。
+     */
+    private static readonly BUSY_SLOW_SEC = 4;
 
     public static get instance(): UIManager {
         if (!UIManager._inst) {
@@ -158,9 +180,14 @@ export class UIManager {
      */
     public async gotoAiPractice(gameId: GameId, aiLevel: AiLevel): Promise<void> {
         services.room.leaveRoom().catch(() => undefined);
+        // 全流程遮罩：建房 → 开局 → 取快照 是连续三次云函数往返，
+        // 真机上没有提示会让人以为按钮失效而反复点（见 showBusy 的说明）。
+        this.showBusy('正在准备对局…', '正在创建房间（联网中）');
         try {
             await services.room.createRoom(gameId, true, aiLevel);
+            this.updateBusy('正在准备对局…', '正在启动对局');
             await services.room.startRoom();
+            this.updateBusy('正在准备对局…', '正在同步对手信息');
             const room = await services.room.getRoomState();
             if (!room) {
                 throw new Error('房间快照为空（可能已被解散）');
@@ -170,11 +197,15 @@ export class UIManager {
                     room.status
                 } 座位=${room.seats.map((s) => `${s.nickname}${s.isAI ? '[AI]' : ''}`).join(',')}`,
             );
+            this.updateBusy('正在进入对局…');
             this.gotoGame({ gameId, mode: 'ai', room });
         } catch (err) {
             console.error('[UIManager] AI 练习直达失败:', err);
             this.toast(`AI 练习启动失败：${(err as Error).message}`, ToastLevel.ERROR);
             this.gotoLobby();
+        } finally {
+            // ⚠️ 必须在 finally 里收遮罩：失败分支也要收，否则遮罩会永久盖住大厅
+            this.hideBusy();
         }
     }
 
@@ -232,6 +263,172 @@ export class UIManager {
             `[UIManager] 切换场景 → ${scene}（当前场景=${cur ? cur.name : 'null'}）`,
         );
         director.loadScene(scene);
+    }
+
+    // ==================== 等待遮罩（loading） ====================
+    //
+    // 为什么需要它（2026-09-25 用户要求「所有可能等待的按钮操作都要有 loading 提醒」）：
+    //   建房 / 开局 / 加入房间 / 进入对局都要走一次云函数往返，
+    //   真机上这段时间界面**毫无变化**，玩家会以为按钮没生效而反复点，
+    //   于是发出多个并发请求（建房重复、加入报错）。
+    //   Toast 不适合承担这个职责 —— 它 2 秒就消失，而等待可能更久，
+    //   且玩家需要看到「还在进行」的持续迹象。
+    //
+    // 设计要点：
+    //   · 半透明全屏遮罩 + BlockInputEvents：物理上阻止连点（不只是视觉提示）；
+    //   · 转圈动画 + 主文案 + **已等待秒数**：超过阈值补一句「仍在处理」，
+    //     让慢网下的玩家知道没死掉（比一直转圈更让人安心）；
+    //   · showBusy 幂等：重复调用只更新文案、不叠加节点；
+    //   · hideBusy 幂等：没在等待时调用是安全的（各分支都能放心 finally）。
+
+    /**
+     * 显示等待遮罩。
+     *
+     * @param text 主文案（如「正在创建房间…」）。要短，一行能放下。
+     * @param detail 可选的第二行补充说明（如「马上就好」）
+     */
+    public showBusy(text: string, detail?: string): void {
+        const scene = director.getScene();
+        if (!scene) {
+            return; // 场景未就绪：静默跳过，不能因为提示不了而让主流程失败
+        }
+        const canvas = this._findCanvas(scene);
+        if (!canvas) {
+            return;
+        }
+
+        // 已在等待：只更新文案，不重复建节点（避免叠加出多个遮罩）
+        if (this._busyNode && this._busyNode.isValid) {
+            this._applyBusyText(text, detail);
+            return;
+        }
+
+        const root = this._overlayRoot(canvas);
+        const visible = view.getVisibleSize();
+
+        // ── 遮罩层：拦截一切输入 ──
+        // 用半透明黑而不是全黑：既表明「在处理」，又让玩家看得到背景没跳走。
+        // 颜色走 UITheme.overlayColor（蒙层语义键），不在业务里硬编码色值。
+        const node = createRect('BusyOverlay', visible.width, visible.height, overlayColor(150), 0);
+        root.addChild(node);
+        node.setPosition(new Vec3(0, 0, 0));
+        // 物理拦截：即使有按钮漏在外面，事件也到不了它
+        node.addComponent(BlockInputEvents);
+        node.setSiblingIndex(root.children.length - 1);
+
+        // ── 转圈指示器：8 个小点绕圈，纯代码生成（不依赖美术资源）──
+        const spinner = new Node('Spinner');
+        spinner.layer = Layers.Enum.UI_2D;
+        spinner.addComponent(UITransform).setContentSize(96, 96);
+        node.addChild(spinner);
+        spinner.setPosition(new Vec3(0, 60, 0));
+        for (let i = 0; i < 8; i++) {
+            const dot = createRect('dot', 14, 14, THEME.onPrimary, 7);
+            spinner.addChild(dot);
+            const angle = (Math.PI * 2 * i) / 8;
+            dot.setPosition(new Vec3(Math.cos(angle) * 34, Math.sin(angle) * 34, 0));
+            // 尾部渐隐：让「旋转」有方向感（静态帧也能看出是个转圈）
+            const op = dot.addComponent(UIOpacity);
+            op.opacity = 60 + Math.floor((195 * i) / 7);
+        }
+        // 整体匀速旋转。停止由 hideBusy 里 destroy 节点自然终结
+        // （tween 绑在节点上，节点销毁即失效，不会泄漏）。
+        tween(spinner)
+            .by(1.0, { angle: -360 })
+            .repeatForever()
+            .start();
+
+        // ── 文案 ──
+        // 注意：createLabel 返回的是 **Node**，文案/颜色要经 getComponent(Label) 拿组件
+        const labelNode = createLabel('BusyLabel', text, FONT.body, THEME.onPrimary, 560);
+        node.addChild(labelNode);
+        labelNode.setPosition(new Vec3(0, -40, 0));
+        const label = labelNode.getComponent(Label);
+
+        const detailNode = createLabel('BusyDetail', detail ?? '', FONT.caption, THEME.textDim, 560);
+        node.addChild(detailNode);
+        detailNode.setPosition(new Vec3(0, -84, 0));
+        const detailLabel = detailNode.getComponent(Label);
+
+        // ── 已等待秒数（慢网时是「还活着」的证据）──
+        const timerNode = createLabel('BusyTimer', '', FONT.caption, THEME.textDim, 560);
+        node.addChild(timerNode);
+        timerNode.setPosition(new Vec3(0, -124, 0));
+        const timerLabel = timerNode.getComponent(Label);
+
+        this._busyNode = node;
+        this._busyLabel = label;
+        this._busyTimerLabel = timerLabel;
+        this._busyDetailLabel = detailLabel;
+        this._busySince = Date.now();
+
+        // 秒表：每 200ms 刷新一次（比 1s 更跟手，代价可忽略）
+        this._busyTick = setInterval(() => {
+            if (!this._busyNode || !this._busyNode.isValid) {
+                return;
+            }
+            const sec = Math.floor((Date.now() - this._busySince) / 1000);
+            if (sec <= 0) {
+                return;
+            }
+            const slow = sec >= UIManager.BUSY_SLOW_SEC;
+            this._busyTimerLabel!.string = slow
+                ? `已等待 ${sec} 秒 · 网络较慢，仍在处理，请稍候`
+                : `已等待 ${sec} 秒`;
+        }, 200);
+
+        console.log(`[UIManager] 显示等待遮罩：${text}${detail ? ` / ${detail}` : ''}`);
+    }
+
+    /**
+     * 更新等待遮罩的文案（遮罩不存在时等同 showBusy）。
+     *
+     * 用途：一个流程里有多个阶段（如「正在建房…」→「正在进入对局…」），
+     * 每推进一段就换文案，玩家能看出确实在往前走。
+     */
+    public updateBusy(text: string, detail?: string): void {
+        if (!this._busyNode || !this._busyNode.isValid) {
+            this.showBusy(text, detail);
+            return;
+        }
+        this._applyBusyText(text, detail);
+    }
+
+    /**
+     * 隐藏等待遮罩（幂等）。
+     *
+     * ⚠️ 必须在**所有**退出路径上调用（成功/失败/异常），
+     *    否则遮罩会永久挡住界面 —— 那比没有 loading 更糟。
+     *    建议业务侧一律写 `try { ... } finally { uiManager.hideBusy(); }`。
+     */
+    public hideBusy(): void {
+        if (this._busyTick !== null) {
+            clearInterval(this._busyTick);
+            this._busyTick = null;
+        }
+        if (this._busyNode && this._busyNode.isValid) {
+            this._busyNode.destroy();
+        }
+        this._busyNode = null;
+        this._busyLabel = null;
+        this._busyDetailLabel = null;
+        this._busyTimerLabel = null;
+        this._busySince = 0;
+    }
+
+    /** 是否正在显示等待遮罩。 */
+    public isBusy(): boolean {
+        return !!this._busyNode && this._busyNode.isValid;
+    }
+
+    /** 改写遮罩内文案（内部用）。 */
+    private _applyBusyText(text: string, detail?: string): void {
+        if (this._busyLabel) {
+            this._busyLabel.string = text;
+        }
+        if (this._busyDetailLabel) {
+            this._busyDetailLabel.string = detail ?? '';
+        }
     }
 
     // ==================== Toast ====================

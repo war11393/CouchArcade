@@ -159,11 +159,14 @@ export class RoomScene extends Component {
             let state: RoomState;
             if (params.joinRoomId) {
                 console.log(`[RoomScene] 尝试加入房间 ${params.joinRoomId}`);
+                uiManager.showBusy('正在加入房间…', `房间号 ${params.joinRoomId}`);
                 state = await room.joinRoom(params.joinRoomId);
             } else {
                 console.log(`[RoomScene] 创建房间（模式=${params.mode}）`);
+                uiManager.showBusy('正在创建房间…', '正在联网，请稍候');
                 state = await room.createRoom(params.gameId, params.mode === 'ai', params.aiLevel);
             }
+            uiManager.updateBusy('正在同步房间信息…');
 
             this._unwatch = room.watchRoom((s) => this._onRoomState(s));
             this._onRoomState(state);
@@ -189,6 +192,12 @@ export class RoomScene extends Component {
             console.error('[RoomScene] 初始化房间失败:', err);
             uiManager.toast(`进入房间失败：${(err as Error).message}`, undefined);
             uiManager.gotoLobby();
+        } finally {
+            // 建房/加入这一次往返已结束，无论成败都收遮罩。
+            // ⚠️ 联机房的「等待对手加入」**不用遮罩表达** —— 那可能是几分钟，
+            //    遮罩会一直挡住房间号与邀请按钮。它由 _setStatus 文案承担。
+            //    （此处原先误写成 updateBusy，紧接就被 hideBusy 收掉，等于没写。）
+            uiManager.hideBusy();
         }
     }
 
@@ -446,6 +455,8 @@ export class RoomScene extends Component {
 
     /** 切换准备状态。 */
     private async _onToggleReady(): Promise<void> {
+        // 准备是一次短往返，但真机上仍有明显延迟；加遮罩顺带防连点
+        uiManager.showBusy(this._myReady ? '正在取消准备…' : '正在准备…');
         try {
             this._myReady = !this._myReady;
             await services.room.setReady(this._myReady);
@@ -458,6 +469,8 @@ export class RoomScene extends Component {
         } catch (err) {
             console.error('[RoomScene] 设置准备失败:', err);
             uiManager.toast('操作失败，请重试', undefined);
+        } finally {
+            uiManager.hideBusy();
         }
     }
 
@@ -480,9 +493,11 @@ export class RoomScene extends Component {
         }
         this._starting = true;
         console.log('[RoomScene] _onStart：调用 startRoom…');
+        uiManager.showBusy('正在开始对局…', '请稍候');
         try {
             await services.room.startRoom();
             console.log('[RoomScene] startRoom 成功，拉取房间快照…');
+            uiManager.updateBusy('正在进入对局…');
             const state = await services.room.getRoomState();
             if (state) {
                 this._enterGame(state);
@@ -496,6 +511,7 @@ export class RoomScene extends Component {
             // 失败后允许重试（例如另一个人刚入座再点开始）；成功路径由
             // _entered 兜住，不会因重进而重复切场景。
             this._starting = false;
+            uiManager.hideBusy();
         }
     }
 
@@ -543,10 +559,14 @@ export class RoomScene extends Component {
         } catch (err) {
             console.warn('[RoomScene] 清除分享内容失败（不阻塞退房）:', err);
         }
+        // 退房要走一次云函数；期间界面不该再响应点击（避免退到一半又点了开局）
+        uiManager.showBusy('正在退出房间…');
         try {
             await services.room.leaveRoom();
         } catch (err) {
             console.error('[RoomScene] 离开房间失败:', err);
+        } finally {
+            uiManager.hideBusy();
         }
         uiManager.gotoLobby();
     }
