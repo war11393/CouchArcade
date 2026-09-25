@@ -312,7 +312,25 @@ export class PlaneHuntLayoutProvider implements ILayoutProvider {
             heads,
             fingerprint: this._fingerprint(seed, heads),
         };
-        // 开局打印完整棋盘（人工核对形态用）。
+
+        // ★ 先打印「可核对的两端对账指纹」——这是排查「dump 与真实棋盘对不上」
+        //   的第一入口，必须在 dump 之前、且**无条件**打印（不受 LOG_VERBOSE 影响）。
+        //
+        // 为什么单列一行（2026-09-25 用户实测踩坑）：
+        //   用户按客户端 dump 的棋盘去真实对局里找机头，位置完全对不上。
+        //   但两端的生成算法与产物校验当时都是绿的 —— 根因是
+        //   **客户端构建产物（build/wechatgame）仍是旧算法**，而云端已部署新版；
+        //   两端算同一 seed 得到不同布局，而客户端此前**从不打印自己的
+        //   fingerprint**，导致这种「版本错配」在日志上完全看不出来
+        //   （云函数那边一直有打印，无处比对）。
+        //   现在两端都打印 fp，对不上就是版本错配，一眼可判。
+        console.log(
+            `[PlaneHuntLayout] 本地影子布局 seed=${seed} 机头数=${heads.length} ` +
+                `fingerprint=${layout.fingerprint} —— 必须与云函数 startGame 日志里的 ` +
+                'fingerprint 相同；不同 = 两端算法版本不一致（多半是客户端产物未重新构建）',
+        );
+
+        // 打印完整棋盘（人工核对形态用）。
         // ⚠️ 这是**客户端本地**那份（由 seed 推导的影子布局），
         //    翻格结果仍以云端权威下发为准；但核对「形态对不对」看这份即可
         //    —— 两端用同一套生成算法，正常应完全一致。

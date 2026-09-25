@@ -352,5 +352,36 @@ console.log('\n场景 4：布局自身合法（只算实体格不重叠 + 每架
     assert(badHead === 0, '机头数 = 架数，且每架恰好一个机头、planeIndex 唯一');
 }
 
+// =====================================================================
+console.log('\n场景 5：客户端必须打印可对账的 fingerprint（版本错配的唯一识别入口）');
+// =====================================================================
+{
+    // 背景：2026-09-25 实测「按客户端 dump 找机头，真实棋盘对不上」——
+    // 根因是客户端产物仍是旧算法（云端已更新），两端同 seed 得不同布局。
+    // 客户端当时**从不打印自己的 fingerprint**，云函数那边一直有打印，
+    // 于是这种版本错配在日志上完全无从比对。
+    // 这里把「客户端必须打印 fp」钉死，防止再次退回盲区。
+    const src = fs.readFileSync(LAYOUT_TS, 'utf8');
+    assert(
+        /fingerprint=\$\{layout\.fingerprint\}/.test(src) ||
+            /fingerprint=\$\{[^}]*fingerprint[^}]*\}/.test(src),
+        '★ 客户端打印自己的 fingerprint（与云函数 startGame 的可对比）',
+    );
+    assert(
+        /本地影子布局 seed=/.test(src),
+        '打印行标明是「本地影子布局」（避免误当成权威布局）',
+    );
+    // 必须无条件打印：不能包在 LOG_VERBOSE 里（否则默认配置下又看不见）
+    const consoleLine = src.match(/[\s\S]{0,300}本地影子布局 seed=[\s\S]{0,300}/);
+    assert(
+        !!consoleLine && !/LOG_VERBOSE[\s\S]{0,120}本地影子布局/.test(consoleLine[0]),
+        '该打印不在 LOG_VERBOSE 条件下（默认配置也必须可见）',
+    );
+
+    // 反例自证：抹掉这行打印后，上面的断言会失败
+    const broken = src.replace(/本地影子布局 seed=/, '已移除');
+    assert(!/本地影子布局 seed=/.test(broken), '反例：抹掉打印后断言确实会红（断言有效）');
+}
+
 console.log(`\n通过 ${passed}，失败 ${failed}`);
 process.exit(failed === 0 ? 0 : 1);
